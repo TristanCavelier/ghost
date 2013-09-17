@@ -1,0 +1,448 @@
+#!/bin/bash
+
+# The MIT License (MIT)
+#
+# Copyright (c) 2013 Tristan Cavelier <t.cavelier@free.fr>
+#
+# Permission is hereby granted, free of charge, to any person obtaining a copy
+# of this software and associated documentation files (the "Software"), to deal
+# in the Software without restriction, including without limitation the rights
+# to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+# copies of the Software, and to permit persons to whom the Software is
+# furnished to do so, subject to the following conditions:
+#
+# The above copyright notice and this permission notice shall be included in
+# all copies or substantial portions of the Software.
+#
+# THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+# IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+# FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+# AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+# LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+# OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
+# THE SOFTWARE.
+
+# partclone
+# dd
+# sfdisk
+# gzip
+# zcat
+# tar
+# ls
+# tail
+# tr
+
+usage="Usage:
+    $0 ACTION NAME DEV             # backup/restore partition table and amorce
+    $0 ACTION NAME PART            # backup/restore partition (partclone + gz)
+
+    $0 ACTION-table NAME DEV       # backup/restore partition table
+    $0 ACTION-amorce NAME DEV      # backup/restore amorce
+
+    $0 ACTION-partclone NAME PART  # backup/restore partition (partclone + gz)
+    $0 ACTION-tar NAME PART        # backup/restore partition content (tar + gz)
+
+    $0 ACTION-ddgz NAME {DEV|PART} # backup/restore device (dd + gz)
+
+
+ACTION is 'backup' or 'restore'.
+
+NAME is the name of the backup. Ex: \"Saved_Data\"
+DEV is the device which contains partition table. Ex: sdb
+PART is the partition device. Ex: sdb1
+
+It uses the files which name is in format:
+    ./NAME.DEV.mbr.bin
+    ./NAME.DEV.amorce.bin
+    ./NAME.DEV.sfdisk
+for the partition table and amorce backup/restore.
+And:
+    ./NAME.PART.ntfs.UUID.partclone.gz
+for the partition backup/restore.
+
+Commands used to backup partition table and amorce:
+    dd if=/dev/DEV of=NAME.DEV.mbr.bin bs=512 count=1
+    dd if=/dev/DEV of=NAME.DEV.amorce.bin bs=446 count=1
+    sfdisk -d /dev/DEV > NAME.DEV.sfdisk
+
+Command used to backup partition:
+    partclone.TYPE -c -s /dev/PART | gzip -c > NAME.PART.TYPE.UUID.partclone.gz
+    or
+    tar czf NAME.PART.TYPE.UUID.tar.gz -C MOUNTPOINT FILES
+    or
+    dd if=/dev/DEV | gzip -c > NAME.DEV.dd.gz
+
+Commands used to restore partition table and amorce:
+    dd if=NAME.DEV.mbr.bin of=/dev/DEV
+    dd if=NAME.DEV.amorce.bin of=/dev/DEV
+    sfdisk --force /dev/DEV < NAME.DEV.sfdisk
+
+Command used to restore partition:
+    zcat NAME.PART.TYPE.UUID.partclone.gz | partclone.restore -o /dev/PART
+    or
+    tar xf NAME.PART.TYPE.UUID.tar.gz -C MOUNTPOINT
+    or
+    zcat NAME.DEV.dd.gz | dd of=/dev/DEV
+"
+
+message() {
+    echo -e "\033[36;1m$*\033[0m"
+}
+
+check_device_existence() {
+    # check_device_existence /dev/sdx[y]
+    lsblk "$1" > /dev/null
+}
+
+backup_device_ddgz() {
+    # backup_device_ddgz NAME DEV
+    local out="$1"."$2".dd.gz
+    message Clonning...
+    echo dd if=/dev/"$2" \| gzip -c \> "$out".clonning
+    dd if=/dev/"$2" | gzip -c > "$out".clonning || return 3
+    mv "$out".clonning "$out" || return 4
+    message Done
+}
+
+backup_filesystem_partclone() {
+    # backup_filesystem_partclone NAME PART
+    local fstype=$(lsblk -rno FSTYPE /dev/"$2")
+    local uuid=$(lsblk -rno UUID /dev/"$2")
+    local out="$1"."$2".$fstype.$uuid.partclone.gz
+    message Clonning...
+    echo partclone.$fstype -c -s /dev/"$2" \| \
+        gzip -c \> "$out".clonning
+    partclone.$fstype -c -s /dev/"$2" | \
+        gzip -c > "$out".clonning || \
+        return 3
+    echo mv "$out".clonning "$out"
+    mv "$out".clonning "$out" || return 4
+    message Done
+}
+
+backup_filesystem_targz() {
+    # backup_filesystem_targz NAME PART
+    local mountpoint="$(lsblk -rno MOUNTPOINT /dev/"$2")"
+    [ -z "$mountpoint" ] && echo Partition not mounted && return 3
+    local fstype=$(lsblk -rno FSTYPE /dev/"$2")
+    local uuid=$(lsblk -rno UUID /dev/"$2")
+    local out="$1"."$2".$fstype.$uuid.tar.gz
+    message Clonning...
+    echo tar czf "$out".clonning -C "$mountpoint" \
+        \$\(ls -a1 "$mountpoint" \| tail -n +3 \| tr \"\\n\" \" \"\)
+    tar czf "$out".clonning -C "$mountpoint" \
+        $(ls -a1 "$mountpoint" | tail -n +3 | tr '\n' ' ') || return 3
+    echo mv "$out".clonning "$out"
+    mv "$out".clonning "$out" || return 4
+    message Done
+}
+
+backup_table_amorce() {
+    # backup_table_amorce NAME DEV
+    message Clonning master boot record
+    dd if=/dev/"$2" of="$1"."$2".mbr.bin bs=512 count=1 || return 3
+    message Clonning amorce
+    dd if=/dev/"$2" of="$1"."$2".amorce.bin bs=446 count=1 || return 3
+    message Clonning table informations
+    sfdisk -d /dev/"$2" > "$1"."$2".sfdisk || return 3
+    message Done
+}
+
+backup_table() {
+    # backup_table NAME DEV
+    message Clonning master boot record
+    dd if=/dev/"$2" of="$1"."$2".mbr.bin bs=512 count=1 || return 3
+    message Clonning table informations
+    sfdisk -d /dev/"$2" > "$1"."$2".sfdisk || return 3
+    message Done
+}
+
+backup_amorce() {
+    # backup_amorce NAME DEV
+    message Clonning amorce
+    dd if=/dev/"$2" of="$1"."$2".amorce.bin bs=446 count=1 || return 3
+    message Done
+}
+
+backup() {
+    # backup NAME DEV
+    # backup NAME PART
+    local dev_type=$(lsblk -rno TYPE /dev/"$2" | head -n 1)
+    case "$dev_type" in
+        disk) backup_table_amorce "$@" ; return $? ;;
+        part)
+            if which partclone.restore &>/dev/null ; then
+                backup_filesystem_partclone "$@" ; return $?
+            else
+                backup_filesystem_targz "$@" ; return $?
+            fi
+            ;;
+        *) return 2 ;;
+    esac
+}
+
+restore_device_ddgz() {
+    # backup_device_ddgz NAME DEV
+    local in="$1"."$2".dd.gz
+    message Restoring...
+    echo zcat "$in" \| dd of=/dev/"$2"
+    zcat "$in" | dd of=/dev/"$2" || return 3
+    message Done
+}
+
+restore_filesystem_partclone() {
+    # restore NAME PART
+    local fstype=$(lsblk -rno FSTYPE /dev/"$2")
+    local uuid=$(lsblk -rno UUID /dev/"$2")
+    local in="$1"."$2".$fstype.$uuid.partclone.gz
+    [ ! -f "$in" ] && echo "File $in does not exist" 1>&2 && \
+        return 3
+    message Restoring partition
+    echo zcat "$in" \| partclone.restore -o /dev/"$2"
+    zcat "$in" | partclone.restore -o /dev/"$2" || return 3
+    message Done
+}
+
+restore_filesystem_targz() {
+    # restore NAME PART
+    local mountpoint="$(lsblk -rno MOUNTPOINT /dev/"$2")"
+    [ -z "$mountpoint" ] && echo Partition not mounted && return 3
+    local fstype=$(lsblk -rno FSTYPE /dev/"$2")
+    local uuid=$(lsblk -rno UUID /dev/"$2")
+    local in="$1"."$2".$fstype.$uuid.tar.gz
+    [ ! -f "$in" ] && echo "File $in does not exist" 1>&2 && \
+        return 3
+    message Restoring partition
+    echo tar xf "$in" -C "$mountpoint"
+    tar xf "$in" -C "$mountpoint"
+    message Done
+}
+
+restore_table_amorce() {
+    # restore NAME DEV
+    message Restoring master boot record
+    dd if="$1"."$2".mbr.bin of=/dev/"$2" || return 3
+    message Restoring amorce
+    dd if="$1"."$2".amorce.bin of=/dev/"$2" || return 3
+    message Restoring table informations
+    sfdisk --force /dev/"$2" < "$1"."$2".sfdisk || return 3
+    message Done
+}
+
+restore_table() {
+    # restore NAME DEV
+    message Restoring master boot record
+    dd if="$1"."$2".mbr.bin of=/dev/"$2" || return 3
+    message Restoring table informations
+    sfdisk --force /dev/"$2" < "$1"."$2".sfdisk || return 3
+    message Done
+}
+
+restore_amorce() {
+    # restore NAME DEV
+    message Restoring amorce
+    dd if="$1"."$2".amorce.bin of=/dev/"$2" || return 3
+    message Done
+}
+
+restore() {
+    # restore NAME DEV
+    # restore NAME PART
+    local dev_type=$(lsblk -rno TYPE /dev/"$2" | head -n 1)
+    case "$dev_type" in
+        disk) restore_table_amorce "$@" ; return $? ;;
+        part)
+            if which partclone.restore &>/dev/null ; then
+                restore_filesystem_partclone "$@" ; return $?
+            else
+                restore_filesystem_targz "$@" ; return $?
+            fi
+            ;;
+        *) return 2 ;;
+    esac
+}
+
+main() {
+    test $# != 3 && echo "$usage" && exit 1
+    case "$1" in
+        backup)
+            check_device_existence /dev/"$3" || exit 1
+            backup "$2" "$3"
+            exit $?
+            ;;
+        restore)
+            check_device_existence /dev/"$3" || exit 1
+            restore "$2" "$3"
+            exit $?
+            ;;
+        backup-table)
+            check_device_existence /dev/"$3" || exit 1
+            backup_table "$2" "$3"
+            exit $?
+            ;;
+        restore-table)
+            check_device_existence /dev/"$3" || exit 1
+            restore_table "$2" "$3"
+            exit $?
+            ;;
+        backup-amorce)
+            check_device_existence /dev/"$3" || exit 1
+            backup_amorce "$2" "$3"
+            exit $?
+            ;;
+        restore-table)
+            check_device_existence /dev/"$3" || exit 1
+            restore_amorce "$2" "$3"
+            exit $?
+            ;;
+        backup-partclone)
+            check_device_existence /dev/"$3" || exit 1
+            backup_filesystem_partclone "$2" "$3"
+            exit $?
+            ;;
+        restore-partclone)
+            check_device_existence /dev/"$3" || exit 1
+            restore_filesystem_partclone "$2" "$3"
+            exit $?
+            ;;
+        backup-tar)
+            check_device_existence /dev/"$3" || exit 1
+            backup_filesystem_targz "$2" "$3"
+            exit $?
+            ;;
+        restore-tar)
+            check_device_existence /dev/"$3" || exit 1
+            restore_filesystem_targz "$2" "$3"
+            exit $?
+            ;;
+        backup-ddgz)
+            check_device_existence /dev/"$3" || exit 1
+            backup_device_ddgz "$2" "$3"
+            exit $?
+            ;;
+        restore-ddgz)
+            check_device_existence /dev/"$3" || exit 1
+            restore_device_ddgz "$2" "$3"
+            exit $?
+            ;;
+        '') echo "$usage" ; exit 0 ;;
+        *) echo "$usage" ; exit 1 ;;
+    esac
+}
+main "$@"
+
+################################################################################
+# #!/usr/bin/bash
+# # dependencies partclone, sfdisks, lsblk
+
+# usage="$0 --help"
+# ghost_usage="$0 ghost [-d ]<dev/part> [-t ]<ghost_folder> [-n <name>] [-e swap,vfat,...]"
+# restore_usage="$0 restore [-t ]<ghost_folder|ghost_file> [-d ]<dev/part>"
+
+# main() {
+#     # DEST=<destination> ACTION=<action> DEV=<dev> NAME=<name> main
+#     local lsblk_output
+#     test ! "$ACTION" && ACTION="$1"
+#     shift
+#     if [ "$ACTION" = "ghost" ] ; then
+#         DEV="$DEV" DEST="$DEST" ghost "$@"
+#     elif [ "$ACTION" = "restore" ] ; then
+#         ### RESTORE ###
+#         while [ $# != 0 ] ; do
+#             test ! "$DEST" && DEST="$1" && shift && continue
+#             test ! "$DEV" && DEV="$1" && shift && continue
+#         done
+#         Todo
+#     else
+#         ### ERROR ###
+#         echo "$usage" && exit 1
+#     fi
+# }
+
+# ghost() {
+#     # DEST=<destination> NAME=<name> DEV=<dev> ghost
+#     while [ $# != 0 ] ; do
+#         test ! "$DEV" && DEV="$1" && shift && continue
+#         test ! "$DEST" && DEST="$1" && shift && continue
+#     done
+#     (test ! "$DEV" || test ! "$DEST") && echo "$ghost_usage" && exit 1
+
+#     lsblk_output=$(lsblk -nro NAME,TYPE "$DEV") || exit 2
+#     dev_type=$(echo "$lsblk_output" | head -n 1 | cut -d ' ' -f 2)
+#     mkdir -p "$DEST" || exit 3
+#     cd "$DEST"
+#     if [ "$dev_type" = "disk" ] ; then
+#         DEV="$DEV" NAME="$NAME" ghost_mbr || exit 5
+#         local partitions
+#         partitions=$(echo "$lsblk_output" | grep "part" | cut -d ' ' -f 1)
+#         while [ "$partitions" ] ; do
+#             local part
+#             part=$(echo "$partitions" | head -n 1)
+#             PART="/dev/$part" NAME="$NAME" ghost_part || exit 6
+#             partitions=$(echo "$partitions" | tail -n +2)
+#         done
+#     elif [ "$dev_type" = "part" ] ; then
+#         PART="$DEV" NAME="$NAME" ghost_part || exit 6
+#     else
+#         echo "Unknown device type '$dev_type'"
+#         exit 4
+#     fi
+# }
+
+# ghost_mbr() {
+#     # DEV=<dev> NAME=<name> ghost_mbr
+#     test ! "$DEV" && return 1
+#     dd if=$DEV of=mbr.bin    bs=512 count=1
+#     dd if=$DEV of=amorce.bin bs=446 count=1
+#     sfdisk -d $DEV > $NAME.$(basename $DEV).sfdisk
+# }
+
+# ghost_part() {
+#     # PART=<part> NAME=<name> ghost_part
+#     local tmp
+#     local part_type
+#     tmp=$(lsblk -nro FSTYPE "$PART" | head -n 1)
+#     echo "$tmp" | egrep "^$gbl_except\$" > /dev/null && return 0
+#     part_type="$tmp"
+#     partclone.$part_type -c -s $PART |
+#         gzip -c > $NAME.$(basename "$PART").partclone.$part_type.gz
+# }
+
+# restore_mbr() {
+#     # DEV=<dev> restore_mbr
+#     # dd if=mbr.bin of=/dev/$(SDX)
+#     # sfdisk --force /dev/$(SDX) < $(NAME).$(SDX).sfdisk
+#     Todo
+# }
+
+# restore_part() {
+#     # PART=<part> restore_part
+#     # zcat $(NAME).$(SDX)1.partclone.ntfs.gz | partclone.restore -o /dev/$(SDX)1
+#     # zcat $(NAME).$(SDX)2.partclone.ntfs.gz | partclone.restore -o /dev/$(SDX)2
+#     # zcat $(NAME).$(SDX)3.partclone.ntfs.gz | partclone.restore -o /dev/$(SDX)3
+#     # zcat $(NAME).$(SDX)4.partclone.fat.gz  | partclone.restore -o /dev/$(SDX)4
+#     Todo
+# }
+
+# gbl_except="(swap)"             # (swap|btrfs|lol)
+# gbl_name=$(uname -n)
+# gbl_dest=""
+# gbl_action=""
+# gbl_device=""
+# gbl_temp=$(getopt -s bash -o ht:n:a:d:e: -l help,destination:,name:,action:,device:,except: -n "$0" -- "$@") || exit 1
+# eval set -- "$gbl_temp"
+# while true ; do
+#     case "$1" in
+#         -h|--help) echo "$usage" ; echo "$ghost_usage" ;
+#             echo "$restore_usage" ; exit 0 ;;
+#         -t|--destination) gbl_dest="$2" ; shift 2 ;;
+#         -n|--name) gbl_name="$2" ; shift 2 ;;
+#         -a|--action) gbl_action="$2" ; shift 2 ;;
+#         -d|--device) gbl_device="$2" ; shift 2 ;;
+#         -e|--except) gbl_except="($(echo "$2" | tr , \|))" ; shift 2 ;;
+#         --) shift ; break ;;
+#         *) exit 2 ;;
+#     esac
+# done
+
+# DEST="$gbl_dest" ACTION="$gbl_action" DEV="$gbl_device" NAME="$gbl_name" main "$@"
