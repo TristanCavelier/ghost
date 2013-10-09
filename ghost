@@ -68,7 +68,7 @@ Commands used to backup partition table and amorce:
 Command used to backup partition:
     partclone.TYPE -c -s /dev/PART | gzip -c > NAME.PART.TYPE.UUID.partclone.gz
     or
-    tar czf NAME.PART.TYPE.UUID.tar.gz -C MOUNTPOINT FILES
+    tar czf NAME.PART.TYPE.UUID.tar.gz -X MOUNTDIRS -C MOUNTPOINT FILES
     or
     dd if=/dev/DEV | gzip -c > NAME.DEV.dd.gz
 
@@ -127,11 +127,18 @@ backup_filesystem_targz() {
     local fstype=$(lsblk -rno FSTYPE /dev/"$2")
     local uuid=$(lsblk -rno UUID /dev/"$2")
     local out="$1"."$2".$fstype.$uuid.tar.gz
+    local excluded="$out".excluded.txt
     message Clonning...
-    echo tar czf "$out".clonning -C "$mountpoint" \
+    echo mount \| sed 's^.*on \(.*\) type.*$,\1,' \| \
+        colrm 1 1 \> "$excluded".clonning
+    mount | sed 's,^.*on \(.*\) type.*$,\1,' | \
+        colrm 1 1 > "$excluded".clonning
+    echo tar czf "$out".clonning -X "$excluded".clonning -C "$mountpoint" \
         \$\(ls -a1 "$mountpoint" \| tail -n +3 \| tr \"\\n\" \" \"\)
-    tar czf "$out".clonning -C "$mountpoint" \
+    tar czf "$out".clonning -X "$excluded".clonning -C "$mountpoint" \
         $(ls -a1 "$mountpoint" | tail -n +3 | tr '\n' ' ') || return 3
+    echo mv "$excluded".clonning "$excluded"
+    mv "$excluded".clonning "$excluded"
     echo mv "$out".clonning "$out"
     mv "$out".clonning "$out" || return 4
     message Done
