@@ -48,7 +48,7 @@ Command used to backup partition:
 
     partclone.TYPE -c -s /dev/PART | gzip -c > NAME.PART.TYPE.UUID.partclone.gz
     or
-    tar czf NAME.PART.TYPE.UUID.tar.gz -C MOUNTPOINT FILES
+    tar czf NAME.PART.TYPE.UUID.tar.gz -X MOUNTDIRS -C MOUNTPOINT FILES
     or
     dd if=/dev/DEV | gzip -c > NAME.DEV.dd.gz
 
