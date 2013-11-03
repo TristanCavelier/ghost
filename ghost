@@ -89,10 +89,71 @@ message() {
     echo -e "\033[36;1m$*\033[0m"
 }
 
+######################################################################
+
+#!/bin/bash
+
+escape-regexp() {
+    local tmp="$1"
+    tmp=${tmp//\\/\\\\}
+    tmp=${tmp//./\\.}
+    tmp=${tmp//\$/\\\$}
+    tmp=${tmp//\[/\\\[}
+    tmp=${tmp//\]/\\\]}
+    tmp=${tmp//\(/\\\(}
+    tmp=${tmp//\)/\\\)}
+    tmp=${tmp//\{/\\\{}
+    tmp=${tmp//\}/\\\}}
+    tmp=${tmp//\^/\\\^}
+    tmp=${tmp//\?/\\\?}
+    tmp=${tmp//\*/\\\*}
+    tmp=${tmp//\+/\\\+}
+    tmp=${tmp//\-/\\\-}
+    echo "$tmp"
+}
+
+escape-regexp-sed() {
+    local tmp="$1"
+    tmp=${tmp//\\/\\\\}
+    tmp=${tmp//./\\.}
+    tmp=${tmp//\$/\\\$}
+    tmp=${tmp//\[/\\\[}
+    tmp=${tmp//\]/\\\]}
+    tmp=${tmp//\(/\\\(}
+    tmp=${tmp//\)/\\\)}
+    tmp=${tmp//\{/\\\{}
+    tmp=${tmp//\}/\\\}}
+    tmp=${tmp//\^/\\\^}
+    tmp=${tmp//\?/\\\?}
+    tmp=${tmp//\*/\\\*}
+    tmp=${tmp//\+/\\\+}
+    tmp=${tmp//\-/\\\-}
+
+    tmp=${tmp//\//\\\/}
+    echo "$tmp"
+}
+
+rstrip() {
+    # rstrip string strip
+    local string="$1"
+    [ -n "$2" ] && local strip="$2" || return 1
+    echo -n "$1" | sed s/"\($(escape-regexp-sed "$strip")\)*$"//g
+}
+
+get-mount-dir-from() {
+    [ -z "$1" ] && return 1
+    local from=$(rstrip "$1" /)
+    from="$from/"
+    from=$(escape-regexp "$from")
+    mount | grep '^.*on '"$from" | sed 's,^.*on '"$from"'\(.*\) type.*$,\1,'
+}
+
 check_device_existence() {
     # check_device_existence /dev/sdx[y]
     lsblk "$1" > /dev/null
 }
+
+######################################################################
 
 backup_device_ddgz() {
     # backup_device_ddgz NAME DEV
@@ -129,10 +190,8 @@ backup_filesystem_targz() {
     local out="$1"."$2".$fstype.$uuid.tar.gz
     local excluded="$out".excluded.txt
     message Clonning...
-    echo mount \| sed 's^.*on \(.*\) type.*$,\1,' \| \
-        colrm 1 1 \> "$excluded".clonning
-    mount | sed 's,^.*on \(.*\) type.*$,\1,' | \
-        colrm 1 1 > "$excluded".clonning
+    echo get-mount-dir-from "$mountpoint" \> "$excluded".clonning
+    get-mount-dir-from "$mountpoint" > "$excluded".clonning || return 3
     echo tar czf "$out".clonning -X "$excluded".clonning -C "$mountpoint" \
         \$\(ls -a1 "$mountpoint" \| tail -n +3 \| tr \"\\n\" \" \"\)
     tar czf "$out".clonning -X "$excluded".clonning -C "$mountpoint" \
@@ -268,6 +327,8 @@ restore() {
         *) return 2 ;;
     esac
 }
+
+######################################################################
 
 main() {
     test $# != 3 && echo "$usage" && exit 1
