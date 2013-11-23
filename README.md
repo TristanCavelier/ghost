@@ -2,23 +2,41 @@
 
 Bash ghost utilities using tar, partclone or dd.
 
+## What can be saved?
+
+- Master Boot Record (512 first bytes), Amorce (446 first bytes), Partition table with `sfdisk`
+
+        # ghost backup /dev/sda
+
+- Complete partition file system with `partclone` and `gzip`
+
+        # ghost backup /dev/sda1
+
+- Complete partition data with `dd` and `gzip`
+
+        # ghost backup-ddgz /dev/sda1
+
+- Complete partition files with `tar` and `gzip` (even if the partition is busy!)
+
+        # ghost backup-tar /dev/sda1
+
 ## Usage
 
 Usage:
 
-    $0 ACTION NAME DEV             # backup/restore partition table and amorce
-    $0 ACTION NAME PART            # backup/restore partition (partclone + gz)
+    ghost ACTION NAME DEV             # backup/restore partition table and amorce
+    ghost ACTION NAME PART            # backup/restore partition (partclone + gz)
 
-    $0 ACTION-table NAME DEV       # backup/restore partition table
-    $0 ACTION-amorce NAME DEV      # backup/restore amorce
+    ghost ACTION-table NAME DEV       # backup/restore partition table
+    ghost ACTION-amorce NAME DEV      # backup/restore amorce
 
-    $0 ACTION-partclone NAME PART  # backup/restore partition (partclone + gz)
-    $0 ACTION-tar NAME PART        # backup/restore partition content (tar + gz)
+    ghost ACTION-partclone NAME PART  # backup/restore partition (partclone + gz)
+    ghost ACTION-tar NAME PART        # backup/restore partition content (tar + gz)
 
-    $0 ACTION-ddgz NAME {DEV|PART} # backup/restore device (dd + gz)
+    ghost ACTION-ddgz NAME {DEV|PART} # backup/restore device (dd + gz)
 
 
-ACTION is 'backup' or 'restore'.
+ACTION is `backup` or `restore`.
 
 NAME is the name of the backup. Ex: "Saved_Data"
 
