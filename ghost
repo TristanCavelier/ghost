@@ -338,7 +338,7 @@ restore() {
 ######################################################################
 
 main() {
-    test $# != 3 && echo "$usage" && exit 1
+    test $# != 3 && echo -n "$usage" && exit 1
     case "$1" in
         backup)
             check_device_existence /dev/"$3" || exit 1
