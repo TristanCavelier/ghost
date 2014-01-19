@@ -22,10 +22,12 @@
 # OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
 # THE SOFTWARE.
 
+# colrm
 # dd
+# find
 # gzip
-# ls
 # partclone
+# sed
 # sfdisk
 # tail
 # tar
@@ -189,13 +191,18 @@ backup_filesystem_targz() {
     local uuid=$(lsblk -rno UUID /dev/"$2")
     local out="$1"."$2".$fstype.$uuid.tar.gz
     local excluded="$out".excluded.txt
+    eval set -- "$(cd "$mountpoint" ; find -maxdepth 1 | \
+        tail -n +2 | \
+        colrm 1 2 | \
+        sed "s,','\\\\'',g" | \
+        sed 's,^\(.*\)$,'\''\1'\'',g' | \
+        tr "\n" " ")"
     message Clonning...
     echo get-mount-dir-from "$mountpoint" \> "$excluded".clonning
     get-mount-dir-from "$mountpoint" > "$excluded".clonning || return 3
-    echo tar czf "$out".clonning -X "$excluded".clonning -C "$mountpoint" \
-        \$\(ls -a1 "$mountpoint" \| tail -n +3 \| tr \"\\n\" \" \"\)
-    tar czf "$out".clonning -X "$excluded".clonning -C "$mountpoint" \
-        $(ls -a1 "$mountpoint" | tail -n +3 | tr '\n' ' ') || return 3
+    echo tar czf "$out".clonning -X "$excluded".clonning -C "$mountpoint" "$@"
+    tar czf "$out".clonning -X "$excluded".clonning -C "$mountpoint" "$@" || \
+        return 3
     echo mv "$excluded".clonning "$excluded"
     mv "$excluded".clonning "$excluded"
     echo mv "$out".clonning "$out"
