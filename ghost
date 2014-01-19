@@ -22,6 +22,8 @@
 # OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
 # THE SOFTWARE.
 
+version="1.0.1"
+
 # colrm
 # dd
 # find
@@ -85,6 +87,8 @@ Command used to restore partition:
     tar xf NAME.PART.TYPE.UUID.tar.gz -C MOUNTPOINT
     or
     zcat NAME.DEV.dd.gz | dd of=/dev/DEV
+
+Version: $version
 "
 
 message() {
