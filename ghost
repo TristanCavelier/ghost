@@ -22,7 +22,7 @@
 # OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
 # THE SOFTWARE.
 
-version="1.1.0"
+version="1.1.1"
 
 # colrm
 # dd
@@ -94,6 +94,12 @@ Version: $version
 
 message() {
     echo -e "\033[36;1m$*\033[0m"
+}
+messwrn() {
+    echo -e "\033[33;1m$*\033[0m" 1>&2
+}
+messerr() {
+    echo -e "\033[31;1m$*\033[0m" 1>&2
 }
 
 ######################################################################
@@ -174,6 +180,7 @@ get_sfdisk_output_start_count() {
 backup_device_ddgz() {
     # backup_device_ddgz NAME DEV
     local out="$1"."$2".dd.gz
+    [ -e "$out" ] && messerr "$out already exists" && return 5
     message Clonning...
     echo dd if=/dev/"$2" \| gzip -c \> "$out".clonning
     dd if=/dev/"$2" | gzip -c > "$out".clonning || return 3
@@ -186,6 +193,7 @@ backup_filesystem_partclone() {
     local fstype=$(lsblk -rno FSTYPE /dev/"$2")
     local uuid=$(lsblk -rno UUID /dev/"$2")
     local out="$1"."$2".$fstype.$uuid.partclone.gz
+    [ -e "$out" ] && messerr "$out already exists" && return 5
     message Clonning...
     echo partclone.$fstype -c -s /dev/"$2" \| \
         gzip -c \> "$out".clonning
@@ -204,6 +212,7 @@ backup_filesystem_targz() {
     local fstype=$(lsblk -rno FSTYPE /dev/"$2")
     local uuid=$(lsblk -rno UUID /dev/"$2")
     local out="$1"."$2".$fstype.$uuid.tar.gz
+    [ -e "$out" ] && messerr "$out already exists" && return 5
     local excluded="$out".excluded.txt
     eval set -- "$(cd "$mountpoint" ; find -maxdepth 1 | \
         tail -n +2 | \
@@ -228,7 +237,14 @@ backup_table_amorce_start() {
     # backup_table_amorce NAME DEV
     local sfdisk_output=
     local count=
-
+    [ -e "$1"."$2".mbr.bin ] && \
+        messerr "$1.$2.mbr.bin already exists" && return 5
+    [ -e "$1"."$2".amorce.bin ] && \
+        messerr "$1.$2.amorce.bin already exists" && return 5
+    [ -e "$1"."$2".sfdisk ] && \
+        messerr "$1.$2.sfdisk already exists" && return 5
+    [ -e "$1"."$2".start.bin ] && \
+        messerr "$1.$2.start.bin already exists" && return 5
     message Clonning master boot record
     dd if=/dev/"$2" of="$1"."$2".mbr.bin bs=512 count=1 || return 3
     message Clonning amorce
@@ -245,6 +261,10 @@ backup_table_amorce_start() {
 
 backup_table() {
     # backup_table NAME DEV
+    [ -e "$1"."$2".mbr.bin ] && \
+        messerr "$1.$2.mbr.bin already exists" && return 5
+    [ -e "$1"."$2".sfdisk ] && \
+        messerr "$1.$2.sfdisk already exists" && return 5
     message Clonning master boot record
     dd if=/dev/"$2" of="$1"."$2".mbr.bin bs=512 count=1 || return 3
     message Clonning table informations
@@ -254,6 +274,8 @@ backup_table() {
 
 backup_amorce() {
     # backup_amorce NAME DEV
+    [ -e "$1"."$2".amorce.bin ] && \
+        messerr "$1.$2.amorce.bin already exists" && return 5
     message Clonning amorce
     dd if=/dev/"$2" of="$1"."$2".amorce.bin bs=446 count=1 || return 3
     message Done
@@ -262,6 +284,8 @@ backup_amorce() {
 backup_start() {
     # backup_start NAME DEV
     local count=
+    [ -e "$1"."$2".start.bin ] && \
+        messerr "$1.$2.start.bin already exists" && return 5
     message Clonning start
     count=$(sfdisk -d /dev/"$2" | get_sfdisk_output_start_count) || return 3
     [ $count -gt 10240 ] && count=10240
@@ -289,6 +313,7 @@ backup() {
 restore_device_ddgz() {
     # backup_device_ddgz NAME DEV
     local in="$1"."$2".dd.gz
+    [ ! -f "$in" ] && messerr "$in not found" && return 5
     message Restoring...
     echo zcat "$in" \| dd of=/dev/"$2"
     zcat "$in" | dd of=/dev/"$2" || return 3
@@ -300,8 +325,7 @@ restore_filesystem_partclone() {
     local fstype=$(lsblk -rno FSTYPE /dev/"$2")
     local uuid=$(lsblk -rno UUID /dev/"$2")
     local in="$1"."$2".$fstype.$uuid.partclone.gz
-    [ ! -f "$in" ] && echo "File $in does not exist" 1>&2 && \
-        return 3
+    [ ! -f "$in" ] && messerr "$in not found" && return 5
     message Restoring partition
     echo zcat "$in" \| partclone.restore -o /dev/"$2"
     zcat "$in" | partclone.restore -o /dev/"$2" || return 3
@@ -311,12 +335,11 @@ restore_filesystem_partclone() {
 restore_filesystem_targz() {
     # restore NAME PART
     local mountpoint="$(lsblk -rno MOUNTPOINT /dev/"$2")"
-    [ -z "$mountpoint" ] && echo Partition not mounted && return 3
+    [ -z "$mountpoint" ] && messerr "/dev/$2 not mounted" && return 3
     local fstype=$(lsblk -rno FSTYPE /dev/"$2")
     local uuid=$(lsblk -rno UUID /dev/"$2")
     local in="$1"."$2".$fstype.$uuid.tar.gz
-    [ ! -f "$in" ] && echo "File $in does not exist" 1>&2 && \
-        return 3
+    [ ! -f "$in" ] && messerr "$in not found" && return 5
     message Restoring partition
     echo tar xf "$in" -C "$mountpoint"
     tar xf "$in" -C "$mountpoint"
@@ -325,12 +348,22 @@ restore_filesystem_targz() {
 
 restore_table_amorce_start() {
     # restore NAME DEV
-    message Restoring start
-    dd if="$1"."$2".start.bin of=/dev/"$2" || return 3
+    [ ! -f "$1"."$2".mbr.bin ] && messerr "$1.$2.mbr.bin not found" && return 5
+    [ ! -f "$1"."$2".sfdisk ] && messerr "$1.$2.sfdisk not found" && return 5
+    if [ -f "$1"."$2".start.bin ] ; then
+        message Restoring start
+        dd if="$1"."$2".start.bin of=/dev/"$2" || return 3
+    else
+        messwrn "Restoring start - $1.$2.start.bin not found"
+    fi
     message Restoring master boot record
     dd if="$1"."$2".mbr.bin of=/dev/"$2" || return 3
-    message Restoring amorce
-    dd if="$1"."$2".amorce.bin of=/dev/"$2" || return 3
+    if [ -f "$1"."$2".amorce.bin ] ; then
+        message Restoring amorce
+        dd if="$1"."$2".amorce.bin of=/dev/"$2" || return 3
+    else
+        messwrn "Restoring amorce - $1.$2.amorce.bin not found"
+    fi
     message Restoring table informations
     sfdisk --force /dev/"$2" < "$1"."$2".sfdisk || return 3
     message Done
@@ -338,6 +371,8 @@ restore_table_amorce_start() {
 
 restore_table() {
     # restore NAME DEV
+    [ ! -f "$1"."$2".mbr.bin ] && messerr "$1.$2.mbr.bin not found" && return 5
+    [ ! -f "$1"."$2".sfdisk ] && messerr "$1.$2.sfdisk not found" && return 5
     message Restoring master boot record
     dd if="$1"."$2".mbr.bin of=/dev/"$2" || return 3
     message Restoring table informations
@@ -347,6 +382,8 @@ restore_table() {
 
 restore_amorce() {
     # restore NAME DEV
+    [ ! -f "$1"."$2".amorce.bin ] && messerr "$1.$2.amorce.bin not found" && \
+        return 5
     message Restoring amorce
     dd if="$1"."$2".amorce.bin of=/dev/"$2" || return 3
     message Done
@@ -354,6 +391,8 @@ restore_amorce() {
 
 restore_start() {
     # restore NAME DEV
+    [ ! -f "$1"."$2".start.bin ] && messerr "$1.$2.start.bin not found" && \
+        return 5
     message Restoring start
     dd if="$1"."$2".start.bin of=/dev/"$2" || return 3
     message Done
