@@ -22,7 +22,7 @@
 # OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
 # THE SOFTWARE.
 
-version="1.0.2"
+version="1.1.0"
 
 # colrm
 # dd
@@ -42,6 +42,7 @@ usage="Usage:
 
     $0 ACTION-table NAME DEV       # backup/restore partition table
     $0 ACTION-amorce NAME DEV      # backup/restore amorce
+    $0 ACTION-start NAME DEV       # backup/restore data before first partition
 
     $0 ACTION-partclone NAME PART  # backup/restore partition (partclone + gz)
     $0 ACTION-tar NAME PART        # backup/restore partition content (tar + gz)
@@ -159,6 +160,15 @@ check_device_existence() {
     lsblk "$1" > /dev/null
 }
 
+get_sfdisk_output_start_count() {
+    # sfdisk -d /dev/sdx | get_sfdisk_output_start_count
+    grep -v 'Id= 0' | \
+        grep -oE 'start= *[0-9]+' | \
+        sort | \
+        head -n 1 | \
+        grep -oE '[0-9]+'
+}
+
 ######################################################################
 
 backup_device_ddgz() {
@@ -214,14 +224,22 @@ backup_filesystem_targz() {
     message Done
 }
 
-backup_table_amorce() {
+backup_table_amorce_start() {
     # backup_table_amorce NAME DEV
+    local sfdisk_output=
+    local count=
+
     message Clonning master boot record
     dd if=/dev/"$2" of="$1"."$2".mbr.bin bs=512 count=1 || return 3
     message Clonning amorce
     dd if=/dev/"$2" of="$1"."$2".amorce.bin bs=446 count=1 || return 3
     message Clonning table informations
-    sfdisk -d /dev/"$2" > "$1"."$2".sfdisk || return 3
+    sfdisk_output=$(sfdisk -d /dev/"$2") || return 3
+    echo "$sfdisk_output" > "$1"."$2".sfdisk
+    message Clonning start
+    count=$(echo "$sfdisk_output" | get_sfdisk_output_start_count) || return 3
+    [ $count -gt 10240 ] && count=10240 # ~10MB maximum
+    dd if=/dev/"$2" of="$1"."$2".start.bin count=$count || return 3
     message Done
 }
 
@@ -241,12 +259,22 @@ backup_amorce() {
     message Done
 }
 
+backup_start() {
+    # backup_start NAME DEV
+    local count=
+    message Clonning start
+    count=$(sfdisk -d /dev/"$2" | get_sfdisk_output_start_count) || return 3
+    [ $count -gt 10240 ] && count=10240
+    dd if=/dev/"$2" of="$1"."$2".start.bin count=$count || return 3
+    message Done
+}
+
 backup() {
     # backup NAME DEV
     # backup NAME PART
     local dev_type=$(lsblk -rno TYPE /dev/"$2" | head -n 1)
     case "$dev_type" in
-        disk) backup_table_amorce "$@" ; return $? ;;
+        disk) backup_table_amorce_start "$@" ; return $? ;;
         part)
             if which partclone.restore &>/dev/null ; then
                 backup_filesystem_partclone "$@" ; return $?
@@ -295,8 +323,10 @@ restore_filesystem_targz() {
     message Done
 }
 
-restore_table_amorce() {
+restore_table_amorce_start() {
     # restore NAME DEV
+    message Restoring start
+    dd if="$1"."$2".start.bin of=/dev/"$2" || return 3
     message Restoring master boot record
     dd if="$1"."$2".mbr.bin of=/dev/"$2" || return 3
     message Restoring amorce
@@ -322,12 +352,19 @@ restore_amorce() {
     message Done
 }
 
+restore_start() {
+    # restore NAME DEV
+    message Restoring start
+    dd if="$1"."$2".start.bin of=/dev/"$2" || return 3
+    message Done
+}
+
 restore() {
     # restore NAME DEV
     # restore NAME PART
     local dev_type=$(lsblk -rno TYPE /dev/"$2" | head -n 1)
     case "$dev_type" in
-        disk) restore_table_amorce "$@" ; return $? ;;
+        disk) restore_table_amorce_start "$@" ; return $? ;;
         part)
             if which partclone.restore &>/dev/null ; then
                 restore_filesystem_partclone "$@" ; return $?
@@ -372,6 +409,16 @@ main() {
         restore-amorce)
             check_device_existence /dev/"$3" || exit 1
             restore_amorce "$2" "$3"
+            exit $?
+            ;;
+        backup-start)
+            check_device_existence /dev/"$3" || exit 1
+            backup_start "$2" "$3"
+            exit $?
+            ;;
+        restore-start)
+            check_device_existence /dev/"$3" || exit 1
+            restore_start "$2" "$3"
             exit $?
             ;;
         backup-partclone)

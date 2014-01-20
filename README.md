@@ -29,6 +29,7 @@ Usage:
 
     ghost ACTION-table NAME DEV       # backup/restore partition table
     ghost ACTION-amorce NAME DEV      # backup/restore amorce
+    ghost ACTION-start NAME DEV       # backup/restore data before first partition
 
     ghost ACTION-partclone NAME PART  # backup/restore partition (partclone + gz)
     ghost ACTION-tar NAME PART        # backup/restore partition content (tar + gz)
