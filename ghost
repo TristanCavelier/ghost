@@ -1,598 +1,469 @@
 #!/bin/bash
 
-# Copyright (c) 2014 Tristan Cavelier <t.cavelier@free.fr>
-# This program is free software. It comes without any warranty, to
-# the extent permitted by applicable law. You can redistribute it
-# and/or modify it under the terms of the Do What The Fuck You Want
-# To Public License, Version 2, as published by Sam Hocevar. See
-# the COPYING file for more details.
+version="2.0.0"
 
-version="1.1.1"
+#  Copyright (c) 2014 Tristan Cavelier <t.cavelier@free.fr>
+#
+#  This program is free software. It comes without any warranty, to
+#  the extent permitted by applicable law. You can redistribute it
+#  and/or modify it under the terms of the Do What The Fuck You Want
+#  To Public License, Version 2, as published by Sam Hocevar. See
+#  below for more details.
+#
+#  ___________________________________________________________________
+# |                                                                   |
+# |           DO WHAT THE FUCK YOU WANT TO PUBLIC LICENSE             |
+# |                   Version 2, December 2004                        |
+# |                                                                   |
+# |Copyright (C) 2004 Sam Hocevar <sam@hocevar.net>                   |
+# |                                                                   |
+# |Everyone is permitted to copy and distribute verbatim or modified  |
+# |copies of this license document, and changing it is allowed as long|
+# |as the name is changed.                                            |
+# |                                                                   |
+# |           DO WHAT THE FUCK YOU WANT TO PUBLIC LICENSE             |
+# |  TERMS AND CONDITIONS FOR COPYING, DISTRIBUTION AND MODIFICATION  |
+# |                                                                   |
+# | 0. You just DO WHAT THE FUCK YOU WANT TO.                         |
+# |___________________________________________________________________|
 
-# colrm
+# dependencies:
+# cut
 # dd
-# find
+# grep
 # gzip
-# partclone
+# ls
+# lsblk
+# mkswap
+# partclone (optional)
 # sed
 # sfdisk
-# tail
-# tar
-# tr
 # zcat
 
+cmd=$(basename "$0")
 usage="Usage:
-    $0 ACTION NAME DEV             # backup/restore partition table and amorce
-    $0 ACTION NAME PART            # backup/restore partition (partclone + gz)
+    $cmd list                               # show a list of connected block devices
+    $cmd restore [OPTION] [FOLDER]          # restore disks/partitions from files in FOLDER
+    $cmd backup [OPTION] DEV [FOLDER]       # backup entire disk/part in FOLDER
 
-    $0 ACTION-table NAME DEV       # backup/restore partition table
-    $0 ACTION-amorce NAME DEV      # backup/restore amorce
-    $0 ACTION-start NAME DEV       # backup/restore data before first partition
+    $cmd restore [OPTION] FILE              # restore headers/partitions from FILE
+    $cmd [OPTION]
 
-    $0 ACTION-partclone NAME PART  # backup/restore partition (partclone + gz)
-    $0 ACTION-tar NAME PART        # backup/restore partition content (tar + gz)
+  DEV can be either DISK or PART
+  DISK is disk path (ex: /dev/sda)
+  PART is partition path (ex: /dev/sda1)
+  FOLDER is folder path (default is current working directory)
+  FILE is file path
 
-    $0 ACTION-ddgz NAME {DEV|PART} # backup/restore device (dd + gz)
+  OPTION:
+    -v, --version                  # print the program version and exit
+    -h, --help                     # print this help and exit
+        --info                     # print details about what this program does
 
+  backup OPTION:
+    -n, --dry-run                  # just output backup commands
+    -Z, --no-gzip                  # tells to not use gzip
+        --headers                  # backup disk headers only
+        --parts                    # backup disk partitions only
+        --dd                       # use \`dd\` only
+        --partclone                # use \`partclone\` only
 
-ACTION is 'backup' or 'restore'.
+  restore OPTION:
+    -n, --dry-run                  # just output restoration commands
+"
+info="\
+For \`$cmd restore\`, it will look for this kind of files:
+    ./DEV.dd.bin[.gz]
+    ./DISK.sfdisk[.gz]
+    ./DISK.start.bin
+    ./DISK.mbr.bin
+    ./DISK.amorce.bin
+    ./PART.partclone.bin[.gz]
+    ./PART.[LABEL.]UUID.mkswap (which is empty)
 
-NAME is the name of the backup. Ex: \"Saved_Data\"
-DEV is the device which contains partition table. Ex: sdb
-PART is the partition device. Ex: sdb1
+For \`$cmd backup -- DISK\`, it will create:
+    ./DISK.start.bin
+    ./DISK.mbr.bin
+    ./DISK.amorce.bin
+    ./DISK.sfdisk.gz
+    ./PART.partclone.bin.gz (or PART.dd.bin.gz if FSTYPE is not supported)
+    ./PART.[LABEL.]UUID.mkswap
 
-It uses the files which name is in format:
-    ./NAME.DEV.mbr.bin
-    ./NAME.DEV.amorce.bin
-    ./NAME.DEV.sfdisk
-for the partition table and amorce backup/restore.
-And:
-    ./NAME.PART.ntfs.UUID.partclone.gz
-for the partition backup/restore.
+For \`$cmd backup --headers -- DISK\`, it will create:
+    ./DISK.start.bin
+    ./DISK.mbr.bin
+    ./DISK.amorce.bin
+    ./DISK.sfdisk.gz
 
-Commands used to backup partition table and amorce:
-    dd if=/dev/DEV of=NAME.DEV.mbr.bin bs=512 count=1
-    dd if=/dev/DEV of=NAME.DEV.amorce.bin bs=446 count=1
-    sfdisk -d /dev/DEV > NAME.DEV.sfdisk
+For \`$cmd backup -- PART\`, it will create:
+    ./PART.partclone.bin.gz (or PART.dd.bin.gz if FSTYPE is not supported)
+  or
+    ./PART.[LABEL.]UUID.mkswap
 
-Command used to backup partition:
-    partclone.TYPE -c -s /dev/PART | gzip -c > NAME.PART.TYPE.UUID.partclone.gz
-    or
-    tar czf NAME.PART.TYPE.UUID.tar.gz -X MOUNTDIRS -C MOUNTPOINT FILES
-    or
-    dd if=/dev/DEV | gzip -c > NAME.DEV.dd.gz
+(\`./\` can also be \`FOLDER/\`.)
 
-Commands used to restore partition table and amorce:
-    dd if=NAME.DEV.mbr.bin of=/dev/DEV
-    dd if=NAME.DEV.amorce.bin of=/dev/DEV
-    sfdisk --force /dev/DEV < NAME.DEV.sfdisk
+Command used to get DEV.dd.bin: dd if=DEV of=DEV.dd.bin
+restore with: dd if=DEV.dd.bin of=DEV
 
-Command used to restore partition:
-    zcat NAME.PART.TYPE.UUID.partclone.gz | partclone.restore -o /dev/PART
-    or
-    tar xf NAME.PART.TYPE.UUID.tar.gz -C MOUNTPOINT
-    or
-    zcat NAME.DEV.dd.gz | dd of=/dev/DEV
+Command used to get DEV.dd.bin.gz: dd if=DEV | gzip -c > DEV.dd.bin.gz
+restore with: zcat DEV.dd.bin.gz | dd of=DEV
 
-Version: $version
+Command used to get DISK.sfdisk: sfdisk -d DISK > DISK.sfdisk
+restore with: sfdisk --force DISK < DISK.sfdisk
+
+Command used to get DISK.sfdisk.gz: sfdisk -d DISK | gzip -c > DISK.sfdisk.gz
+restore with: zcat DISK.sfdisk.gz | sfdisk --force DISK
+
+Command used to get DISK.mbr.bin: dd if=DISK of=DISK.mbr.bin bs=512 count=1
+restore with: dd if=DISK.mbr.bin of=DISK bs=512 count=1
+
+Command used to get DISK.amorce.bin: dd if=DISK of=DISK.amorce.bin bs=446 count=1
+restore with: dd if=DISK.amorce.bin of=DISK bs=446 count=1
+
+Command used to get PART.partclone.bin: partclone.FSTYPE -c -s PART > PART.partclone.bin
+restore with: partclone.restore -o PART < PART.partclone.bin
+
+Command used to get PART.partclone.bin.gz: partclone.FSTYPE -c -s PART | gzip -c > PART.partclone.bin.gz
+restore with: zcat PART.partclone.bin.gz | partclone.restore -o PART
+
+Command used to get PART.[LABEL.]UUID.mkswap: echo -n > PART.[LABEL.]UUID.mkswap
+restore with: mkswap [-L LABEL] -U UUID PART
 "
 
-message() {
-    echo -e "\033[36;1m$*\033[0m"
+#         --tar                      # XXX
+#     ./PART.[LABEL.]FSTYPE.UUID.tar.gz  (see ghost-tar)
+# Command used to get PART.[LABEL.]FSTYPE.UUID.tar.gz: tar czf PART.[LABEL.]FSTYPE.UUID.tar.gz -X MOUNTDIRS -C MOUNTPOINT FILES -C /tmp/<tmp> MOUNTDIRSREFERENCES
+# restore with: mkfs.FSTYPE [-L LABEL] -U UUID PART && tar xf PART.[LABEL.]FSTYPE.UUID.tar.gz -C MOUNTPOINT
+#
+# MOUNTDIRREFERENCES are folders that reflect original folders which are used as mountpoints... however, I don't know how to get information about original folder
+#     mkdir mirrorfolder
+#     chmod --reference=originalfolder mirrorfolder
+#     chown --reference=originalfolder mirrorfolder
+
+seeusage="Run \`$cmd --help\` to get more informations."
+unknown_errno=4
+invalid_request_errno=3
+unknown_command_errno=3
+unknown_action_errno=3
+unknown_option_errno=3
+unknown_device_type_errno=2
+invalid_partition_errno=2
+process_stopped_errno=1
+
+
+__print_color() {
+   local nl='\n'
+   local color="$1"
+   shift
+   [ "$1" = -n ] && nl= && shift
+   printf "$color%s\x1b[0m$nl" "$*"
 }
-messwrn() {
-    echo -e "\033[33;1m$*\033[0m" 1>&2
+__print_no_color() {
+   local nl='\n'
+   shift
+   [ "$1" = -n ] && nl= && shift
+   printf "%s$nl" "$*"
 }
-messerr() {
-    echo -e "\033[31;1m$*\033[0m" 1>&2
-}
+__print_cmd=__print_color
+log() { $__print_cmd '' "$@" ;}
+info() { $__print_cmd '\x1b[36;1m' "$@" ;}
+warn() { $__print_cmd '\x1b[33;1m' "$@" 1>&2 ;}
+err() { $__print_cmd '\x1b[31;1m' "$@" 1>&2 ;}
+nl="
+"
 
 ######################################################################
+# Chars forbidden in ntfs "/\?<>:
+# Name separator is .
+# Name escape char pattern is %HH (where H is a hexadecimal digit)
 
-#!/bin/bash
-
-escape-regexp() {
+encode-name-component() {
     local tmp="$1"
-    tmp=${tmp//\\/\\\\}
-    tmp=${tmp//./\\.}
-    tmp=${tmp//\$/\\\$}
-    tmp=${tmp//\[/\\\[}
-    tmp=${tmp//\]/\\\]}
-    tmp=${tmp//\(/\\\(}
-    tmp=${tmp//\)/\\\)}
-    tmp=${tmp//\{/\\\{}
-    tmp=${tmp//\}/\\\}}
-    tmp=${tmp//\^/\\\^}
-    tmp=${tmp//\?/\\\?}
-    tmp=${tmp//\*/\\\*}
-    tmp=${tmp//\+/\\\+}
-    tmp=${tmp//\-/\\\-}
-    echo "$tmp"
+    tmp=${tmp//%/%25}
+    tmp=${tmp//\"/%22}
+    tmp=${tmp//\//%2F}
+    tmp=${tmp//\?/%5C}
+    tmp=${tmp//</%3F}
+    tmp=${tmp//>/%3C}
+    tmp=${tmp//:/%3A}
+    tmp=${tmp//./%2E}
+    tmp=${tmp// /%20}
+    printf "%s" "$tmp"
 }
 
-escape-regexp-sed() {
+decode-name-component() {
     local tmp="$1"
-    tmp=${tmp//\\/\\\\}
-    tmp=${tmp//./\\.}
-    tmp=${tmp//\$/\\\$}
-    tmp=${tmp//\[/\\\[}
-    tmp=${tmp//\]/\\\]}
-    tmp=${tmp//\(/\\\(}
-    tmp=${tmp//\)/\\\)}
-    tmp=${tmp//\{/\\\{}
-    tmp=${tmp//\}/\\\}}
-    tmp=${tmp//\^/\\\^}
-    tmp=${tmp//\?/\\\?}
-    tmp=${tmp//\*/\\\*}
-    tmp=${tmp//\+/\\\+}
-    tmp=${tmp//\-/\\\-}
-
-    tmp=${tmp//\//\\\/}
-    echo "$tmp"
+    tmp=${tmp//%20/ }
+    tmp=${tmp//%2[eE]/.}
+    tmp=${tmp//%3[aA]/:}
+    tmp=${tmp//%3[cC]/>}
+    tmp=${tmp//%3[fF]/<}
+    tmp=${tmp//%5[cC]/\?}
+    tmp=${tmp//%2[fF]/\/}
+    tmp=${tmp//%22/\"}
+    tmp=${tmp//%25/%}
+    printf "%s" "$tmp"
 }
 
-rstrip() {
-    # rstrip string strip
-    local string="$1"
-    [ -n "$2" ] && local strip="$2" || return 1
-    echo -n "$1" | sed s/"\($(escape-regexp-sed "$strip")\)*$"//g
+quote() { printf "%s" \'${1//\'/\'\\\'\'}\' ; }
+evallines() { echo " $1" | while IFS= read -r line ; do eval " $line" || return 1 ; done ; }
+
+-make-restore-cmds-from-file() {
+    # ADD_SORT_INDEX= IGNORE_UNKNOWN_FILES= FORBID_SUB_FOLDERS= FILE= cmd
+    local basename=$(basename "$FILE")
+    local qFILE=$(quote "$FILE")
+    if [ -d "$FILE" ] ; then
+        [ "$FORBID_SUB_FOLDERS" ] && return 0
+        FOLDER="$FILE" FORBID_SUB_FOLDERS=1 -make-restore-cmds-from-folder
+        return $?
+    fi
+    # DEV.dd.bin[.gz]
+    if echo "$basename" | grep -E '^[^.]+\.dd\.bin(\.gz)?$' >/dev/null ; then
+        local qdev=$(quote "$(decode-name-component "$(echo "$basename" | cut -d . -f 1)")")
+        [ "$ADD_SORT_INDEX" ] && echo -n 'a '
+        if echo "$basename" | grep '\.gz$' >/dev/null ; then
+            echo "zcat $qFILE | dd of=$qdev"
+        else
+            echo "dd if=$qFILE of=$qdev"
+        fi
+    # DISK.sfdisk[.gz]
+    elif echo "$basename" | grep -E '^[^.]+\.sfdisk(\.gz)?$' >/dev/null ; then
+        local qdisk=$(quote "$(decode-name-component "$(echo "$basename" | cut -d . -f 1)")")
+        [ "$ADD_SORT_INDEX" ] && echo -n 'b '
+        if echo "$basename" | grep '\.gz$' >/dev/null ; then
+            echo "zcat $qFILE | sfdisk --force $qdisk"
+        else
+            echo "sfdisk --force $qdisk < $qFILE"
+        fi
+    # DISK.start.bin
+    elif echo "$basename" | grep -E '^[^.]+\.start\.bin$' >/dev/null ; then
+        local qdisk=$(quote "$(decode-name-component "$(echo "$basename" | cut -d . -f 1)")")
+        [ "$ADD_SORT_INDEX" ] && echo -n 'c '
+        echo "dd if=$qFILE of=$qdisk count=2048"
+    # DISK.mbr.bin
+    elif echo "$basename" | grep -E '^[^.]+\.mbr\.bin$' >/dev/null ; then
+        local qdisk=$(quote "$(decode-name-component "$(echo "$basename" | cut -d . -f 1)")")
+        [ "$ADD_SORT_INDEX" ] && echo -n 'd '
+        echo "dd if=$qFILE of=$qdisk bs=512 count=1"
+    # DISK.amorce.bin
+    elif echo "$basename" | grep -E '^[^.]+\.amorce\.bin$' >/dev/null ; then
+        local qdisk=$(quote "$(decode-name-component "$(echo "$basename" | cut -d . -f 1)")")
+        [ "$ADD_SORT_INDEX" ] && echo -n 'e '
+        echo "dd if=$qFILE of=$qdisk bs=446 count=1"
+    # PART.partclone.bin[.gz]
+    elif echo "$basename" | grep -E '^[^.]+\.partclone.bin(\.gz)?$' >/dev/null ; then
+        local qpart=$(quote "$(decode-name-component "$(echo "$basename" | cut -d . -f 1)")")
+        [ "$ADD_SORT_INDEX" ] && echo -n 'f '
+        if echo "$basename" | grep '\.gz$' >/dev/null ; then
+            echo "zcat $qFILE | partclone.restore -o $qpart"
+        else
+            echo "partclone.restore -o $qpart < $qFILE"
+        fi
+    # PART.[LABEL.]UUID.mkswap (which is empty)
+    elif echo "$basename" | grep -E '^[^.]+\.[^.]+\.[^.]+.mkswap' >/dev/null ; then
+        local qpart=$(quote "$(decode-name-component "$(echo "$basename" | cut -d . -f 1)")")
+        local qlabel=$(quote "$(decode-name-component "$(echo "$basename" | cut -d . -f 2)")")
+        local quuid=$(quote "$(decode-name-component "$(echo "$basename" | cut -d . -f 3)")")
+        [ "$ADD_SORT_INDEX" ] && echo -n 'g '
+        echo "mkswap -L $qlabel -U $quuid $qpart"
+    elif echo "$basename" | grep -E '^[^.]+\.[^.]+.mkswap' >/dev/null ; then
+        local qpart=$(quote "$(decode-name-component "$(echo "$basename" | cut -d . -f 1)")")
+        local quuid=$(quote "$(decode-name-component "$(echo "$basename" | cut -d . -f 2)")")
+        [ "$ADD_SORT_INDEX" ] && echo -n 'g '
+        echo "mkswap -U $quuid $qpart"
+    else
+        if [ -z "$IGNORE_UNKNOWN_FILES" ] ; then
+            err "Don't know how to restore \`$FILE\`"
+            return $unknown_action_errno
+        fi
+    fi
 }
 
-get-mount-dir-from() {
-    [ -z "$1" ] && return 1
-    local from=$(rstrip "$1" /)
-    from="$from/"
-    from=$(escape-regexp "$from")
-    mount | grep '^.*on '"$from" | sed 's,^.*on '"$from"'\(.*\) type.*$,\1,'
+-make-restore-cmds-from-folder() {
+    # FOLDER= cmd
+    local _status=
+    ls -1 "$FOLDER" | while IFS= read -r line ; do
+        ADD_SORT_INDEX=1 IGNORE_UNKNOWN_FILES=1 FORBID_SUB_FOLDERS=1 FILE="$line" -make-restore-cmds-from-file
+    done | sort | cut -d ' ' -f 2-
 }
 
-check_device_existence() {
-    # check_device_existence /dev/sdx[y]
-    lsblk "$1" > /dev/null
+main-restore() {
+    local dry_run=
+    while [ $# != 0 ] ; do
+        case "$1" in
+            -n|--dry-run) dry_run=1 ; shift ;;
+            --) shift ;;
+            -*) err "Unkown option \`$1\`$nl$seeusage" ; return $unknown_option_errno ;;
+            *) break ;;
+        esac
+    done
+    if [ $# = 0 ] ; then
+        restore_cmds=$(FOLDER=. -make-restore-cmds-from-folder)
+    else
+        restore_cmds=$(for p in "$@" ; do FILE="$p" -make-restore-cmds-from-file ; done) || return $?
+    fi
+    [ -z "$restore_cmds" ] && { warn "Nothing to backup" ; return $process_stopped_errno ; }
+    echo "$restore_cmds"
+    [ $dry_run ] && return 0
+    echo -n "
+Start restore? [y/N] "
+    local answer=
+    IFS= read -r answer
+    [ "$answer" != y ] && { warn "Aborting" ; return $process_stopped_errno ; }
+    evallines "$backup_cmds"
 }
 
-get_sfdisk_output_start_count() {
-    # sfdisk -d /dev/sdx | get_sfdisk_output_start_count
-    grep -v 'Id= 0' | \
-        grep -oE 'start= *[0-9]+' | \
-        sort | \
-        head -n 1 | \
-        grep -oE '[0-9]+'
+blk-label() { lsblk -rno LABEL "$1" | head -n 1 ; }
+blk-uuid() { lsblk -rno UUID "$1" | head -n 1 ; }
+blk-uuids() { lsblk -rno UUID "$1" ; }
+blk-type() { lsblk -rno TYPE "$1" | head -n 1 ; }
+blk-fstype() { lsblk -rno FSTYPE "$1" | head -n 1 ; }
+ls-part-of-disk() { lsblk -rno KNAME,TYPE | grep 'part$' | grep -E -o '^\S+' | sed 's,^,/dev/,g' ; }
+
+-make-backup-cmds-for-dd-entire-disk() {
+    # USE_GZIP= DISK= FOLDER= cmd
+    if [ "$USE_GZIP" ] ; then
+        echo "dd if=$(quote "$DISK") | gzip -c > $(quote "$FOLDER/$(encode-name-component "$DISK").dd.bin.gz")"
+    else
+        echo "dd if=$(quote "$DISK") > $(quote "$FOLDER/$(encode-name-component "$DISK").dd.bin")"
+    fi
 }
 
-######################################################################
-
-backup_device_ddgz() {
-    # backup_device_ddgz NAME DEV
-    local out="$1"."$2".dd.gz
-    [ -e "$out" ] && messerr "$out already exists" && return 5
-    message Clonning...
-    echo dd if=/dev/"$2" \| gzip -c \> "$out".clonning
-    dd if=/dev/"$2" | gzip -c > "$out".clonning || return 3
-    mv "$out".clonning "$out" || return 4
-    message Done
-}
-
-backup_filesystem_partclone() {
-    # backup_filesystem_partclone NAME PART
-    local fstype=$(lsblk -rno FSTYPE /dev/"$2")
-    local uuid=$(lsblk -rno UUID /dev/"$2")
-    local out="$1"."$2".$fstype.$uuid.partclone.gz
-    [ -e "$out" ] && messerr "$out already exists" && return 5
-    message Clonning...
-    echo partclone.$fstype -c -s /dev/"$2" \| \
-        gzip -c \> "$out".clonning
-    partclone.$fstype -c -s /dev/"$2" | \
-        gzip -c > "$out".clonning || \
-        return 3
-    echo mv "$out".clonning "$out"
-    mv "$out".clonning "$out" || return 4
-    message Done
-}
-
-backup_filesystem_targz() {
-    # backup_filesystem_targz NAME PART
-    local mountpoint="$(lsblk -rno MOUNTPOINT /dev/"$2")"
-    [ -z "$mountpoint" ] && echo Partition not mounted && return 3
-    local fstype=$(lsblk -rno FSTYPE /dev/"$2")
-    local uuid=$(lsblk -rno UUID /dev/"$2")
-    local out="$1"."$2".$fstype.$uuid.tar.gz
-    [ -e "$out" ] && messerr "$out already exists" && return 5
-    local excluded="$out".excluded.txt
-    eval set -- "$(cd "$mountpoint" ; find -maxdepth 1 | \
-        tail -n +2 | \
-        colrm 1 2 | \
-        sed "s,','\\\\'',g" | \
-        sed 's,^\(.*\)$,'\''\1'\'',g' | \
-        tr "\n" " ")"
-    message Clonning...
-    echo get-mount-dir-from "$mountpoint" \> "$excluded".clonning
-    get-mount-dir-from "$mountpoint" > "$excluded".clonning || return 3
-    echo tar czf "$out".clonning -X "$excluded".clonning -C "$mountpoint" "$@"
-    tar czf "$out".clonning -X "$excluded".clonning -C "$mountpoint" "$@" || \
-        return 3
-    echo mv "$excluded".clonning "$excluded"
-    mv "$excluded".clonning "$excluded"
-    echo mv "$out".clonning "$out"
-    mv "$out".clonning "$out" || return 4
-    message Done
-}
-
-backup_table_amorce_start() {
-    # backup_table_amorce NAME DEV
-    local sfdisk_output=
-    local count=
-    [ -e "$1"."$2".mbr.bin ] && \
-        messerr "$1.$2.mbr.bin already exists" && return 5
-    [ -e "$1"."$2".amorce.bin ] && \
-        messerr "$1.$2.amorce.bin already exists" && return 5
-    [ -e "$1"."$2".sfdisk ] && \
-        messerr "$1.$2.sfdisk already exists" && return 5
-    [ -e "$1"."$2".start.bin ] && \
-        messerr "$1.$2.start.bin already exists" && return 5
-    message Clonning master boot record
-    dd if=/dev/"$2" of="$1"."$2".mbr.bin bs=512 count=1 || return 3
-    message Clonning amorce
-    dd if=/dev/"$2" of="$1"."$2".amorce.bin bs=446 count=1 || return 3
-    message Clonning table informations
-    sfdisk_output=$(sfdisk -d /dev/"$2") || return 3
-    echo "$sfdisk_output" > "$1"."$2".sfdisk
-    message Clonning start
-    count=$(echo "$sfdisk_output" | get_sfdisk_output_start_count) || return 3
-    [ $count -gt 10240 ] && count=10240 # ~10MB maximum
-    dd if=/dev/"$2" of="$1"."$2".start.bin count=$count || return 3
-    message Done
-}
-
-backup_table() {
-    # backup_table NAME DEV
-    [ -e "$1"."$2".mbr.bin ] && \
-        messerr "$1.$2.mbr.bin already exists" && return 5
-    [ -e "$1"."$2".sfdisk ] && \
-        messerr "$1.$2.sfdisk already exists" && return 5
-    message Clonning master boot record
-    dd if=/dev/"$2" of="$1"."$2".mbr.bin bs=512 count=1 || return 3
-    message Clonning table informations
-    sfdisk -d /dev/"$2" > "$1"."$2".sfdisk || return 3
-    message Done
-}
-
-backup_amorce() {
-    # backup_amorce NAME DEV
-    [ -e "$1"."$2".amorce.bin ] && \
-        messerr "$1.$2.amorce.bin already exists" && return 5
-    message Clonning amorce
-    dd if=/dev/"$2" of="$1"."$2".amorce.bin bs=446 count=1 || return 3
-    message Done
-}
-
-backup_start() {
-    # backup_start NAME DEV
-    local count=
-    [ -e "$1"."$2".start.bin ] && \
-        messerr "$1.$2.start.bin already exists" && return 5
-    message Clonning start
-    count=$(sfdisk -d /dev/"$2" | get_sfdisk_output_start_count) || return 3
-    [ $count -gt 10240 ] && count=10240
-    dd if=/dev/"$2" of="$1"."$2".start.bin count=$count || return 3
-    message Done
-}
-
-backup() {
-    # backup NAME DEV
-    # backup NAME PART
-    local dev_type=$(lsblk -rno TYPE /dev/"$2" | head -n 1)
-    case "$dev_type" in
-        disk) backup_table_amorce_start "$@" ; return $? ;;
-        part)
-            if which partclone.restore &>/dev/null ; then
-                backup_filesystem_partclone "$@" ; return $?
+-make-backup-cmds-for-disk() {
+    # USE_ONLY_CMD= BACKUP_SELECTION= cmd
+    case "${BACKUP_SELECTION:-default}" in
+        default|all)
+            if [ "$USE_ONLY_CMD" = dd ] ; then
+                -make-backup-cmds-for-dd-entire-disk
             else
-                backup_filesystem_targz "$@" ; return $?
+                -make-backup-cmds-for-disk-headers && -make-backup-cmds-for-disk-parts
             fi
             ;;
-        *) return 2 ;;
+        headers) -make-backup-cmds-for-disk-headers ;;
+        parts) -make-backup-cmds-for-disk-parts ;;
+        *) err "Unknown backup selection \`$BACKUP_SELECTION\`" ; return $invalid_request_errno ;;
     esac
 }
 
-restore_device_ddgz() {
-    # backup_device_ddgz NAME DEV
-    local in="$1"."$2".dd.gz
-    [ ! -f "$in" ] && messerr "$in not found" && return 5
-    message Restoring...
-    echo zcat "$in" \| dd of=/dev/"$2"
-    zcat "$in" | dd of=/dev/"$2" || return 3
-    message Done
-}
-
-restore_filesystem_partclone() {
-    # restore NAME PART
-    local fstype=$(lsblk -rno FSTYPE /dev/"$2")
-    local uuid=$(lsblk -rno UUID /dev/"$2")
-    local in="$1"."$2".$fstype.$uuid.partclone.gz
-    [ ! -f "$in" ] && messerr "$in not found" && return 5
-    message Restoring partition
-    echo zcat "$in" \| partclone.restore -o /dev/"$2"
-    zcat "$in" | partclone.restore -o /dev/"$2" || return 3
-    message Done
-}
-
-restore_filesystem_targz() {
-    # restore NAME PART
-    local mountpoint="$(lsblk -rno MOUNTPOINT /dev/"$2")"
-    [ -z "$mountpoint" ] && messerr "/dev/$2 not mounted" && return 3
-    local fstype=$(lsblk -rno FSTYPE /dev/"$2")
-    local uuid=$(lsblk -rno UUID /dev/"$2")
-    local in="$1"."$2".$fstype.$uuid.tar.gz
-    [ ! -f "$in" ] && messerr "$in not found" && return 5
-    message Restoring partition
-    echo tar xf "$in" -C "$mountpoint"
-    tar xf "$in" -C "$mountpoint"
-    message Done
-}
-
-restore_table_amorce_start() {
-    # restore NAME DEV
-    [ ! -f "$1"."$2".mbr.bin ] && messerr "$1.$2.mbr.bin not found" && return 5
-    [ ! -f "$1"."$2".sfdisk ] && messerr "$1.$2.sfdisk not found" && return 5
-    if [ -f "$1"."$2".start.bin ] ; then
-        message Restoring start
-        dd if="$1"."$2".start.bin of=/dev/"$2" || return 3
+-make-backup-cmds-for-disk-headers() {
+    # USE_GZIP= DISK= FOLDER= cmd
+    local eDISK=$(encode-name-component "$DISK")
+    local qDISK=$(quote "$DISK")
+    # TODO get start sector, do dd count=$startsector (max 2048)
+    # DISK.start.bin
+    echo "dd if=$qDISK of=$(quote "$FOLDER/$eDISK.start.bin") count=2048"
+    # DISK.mbr.bin
+    echo "dd if=$qDISK of=$(quote "$FOLDER/$eDISK.mbr.bin") count=1 bs=512"
+    # DISK.amorce.bin
+    echo "dd if=$qDISK of=$(quote "$FOLDER/$eDISK.amorce.bin") count=1 bs=446"
+    # DISK.sfdisk[.gz]
+    if [ "$USE_GZIP" ] ; then
+        echo "sfdisk -d $qDISK | gzip -c > $(quote "$FOLDER/$eDISK.sfdisk.gz")"
     else
-        messwrn "Restoring start - $1.$2.start.bin not found"
+        echo "sfdisk -d $qDISK > $(quote "$FOLDER/$eDISK.sfdisk")"
     fi
-    message Restoring master boot record
-    dd if="$1"."$2".mbr.bin of=/dev/"$2" || return 3
-    if [ -f "$1"."$2".amorce.bin ] ; then
-        message Restoring amorce
-        dd if="$1"."$2".amorce.bin of=/dev/"$2" || return 3
+}
+
+-make-backup-cmds-for-disk-parts() {
+    # DISK= cmd
+    ls-part-of-disk "$DISK" | while IFS= read -r part ; do
+        PART="$part" BACKUP_SELECTION=default -make-backup-cmds-for-part
+    done
+}
+
+-make-backup-cmds-for-part() {
+    # USE_GZIP= BACKUP_SELECTION= USE_ONLY_CMD= PART= FOLDER= cmd
+    [ "${BACKUP_SELECTION:-default}" != default ] && { err "Invalid selection \`$BACKUP_SELECTION\`" ; return $invalid_request_errno ; }
+    local ePART=$(encode-name-component "$PART")
+    local qPART=$(quote "$PART")
+    local fstype=$(blk-fstype "$PART")
+    # PART.[LABEL.]UUID.mkswap
+    if [ "$fstype" = swap ] ; then
+        local label=$(blk-label "$PART")
+        local elabel=$(encode-name-component "$label")
+        local uuid=$(blk-uuid "$PART")
+        [ "$uuid" ] || { err "Part \`$PART\` has no uuid" ; return $invalid_partition_errno ; }
+        echo "echo -n > $(quote "$ePART.${elabel:-}${label:+.}$uuid.mkswap")"
+    # PART.parclone.bin[.gz]
+    elif [ "${USE_ONLY_CMD:-partclone}" = partclone ] && which partclone."$fstype" &>/dev/null ; then
+        if [ "$USE_GZIP" ] ; then
+            echo "partclone.$fstype -c -s $qPART | gzip -c > $ePART.partclone.bin.gz"
+        else
+            echo "partclone.$fstype -c -s $qPART > $ePART.partclone.bin"
+        fi
+    # PART.dd.bin[.gz]
+    elif [ "${USE_ONLY_CMD:-dd}" = dd ] ; then
+        if [ "$USE_GZIP" ] ; then
+            echo "dd if=$qPART | gzip -c > $ePART.dd.bin.gz"
+        else
+            echo "dd if=$ePART of=$ePART.bin"
+        fi
     else
-        messwrn "Restoring amorce - $1.$2.amorce.bin not found"
+        err "No backup command found for \`$PART\`"
+        return $unknown_command_errno
     fi
-    message Restoring table informations
-    sfdisk --force /dev/"$2" < "$1"."$2".sfdisk || return 3
-    message Done
 }
 
-restore_table() {
-    # restore NAME DEV
-    [ ! -f "$1"."$2".mbr.bin ] && messerr "$1.$2.mbr.bin not found" && return 5
-    [ ! -f "$1"."$2".sfdisk ] && messerr "$1.$2.sfdisk not found" && return 5
-    message Restoring master boot record
-    dd if="$1"."$2".mbr.bin of=/dev/"$2" || return 3
-    message Restoring table informations
-    sfdisk --force /dev/"$2" < "$1"."$2".sfdisk || return 3
-    message Done
-}
-
-restore_amorce() {
-    # restore NAME DEV
-    [ ! -f "$1"."$2".amorce.bin ] && messerr "$1.$2.amorce.bin not found" && \
-        return 5
-    message Restoring amorce
-    dd if="$1"."$2".amorce.bin of=/dev/"$2" || return 3
-    message Done
-}
-
-restore_start() {
-    # restore NAME DEV
-    [ ! -f "$1"."$2".start.bin ] && messerr "$1.$2.start.bin not found" && \
-        return 5
-    message Restoring start
-    dd if="$1"."$2".start.bin of=/dev/"$2" || return 3
-    message Done
-}
-
-restore() {
-    # restore NAME DEV
-    # restore NAME PART
-    local dev_type=$(lsblk -rno TYPE /dev/"$2" | head -n 1)
-    case "$dev_type" in
-        disk) restore_table_amorce_start "$@" ; return $? ;;
-        part)
-            if which partclone.restore &>/dev/null ; then
-                restore_filesystem_partclone "$@" ; return $?
-            else
-                restore_filesystem_targz "$@" ; return $?
-            fi
-            ;;
-        *) return 2 ;;
+-make-backup-cmds() {
+    # DEV= FOLDER= cmd
+    local type=$(blk-type "$DEV" 2>/dev/null)
+    case "$type" in
+        disk) DISK="$DEV" -make-backup-cmds-for-disk ;;
+        part) PART="$DEV" -make-backup-cmds-for-part ;;
+        '') err "Unknown block device type of \`$DEV\`" ; return $unknown_device_type_errno ;;
+        *) err "Unknown block device \`$type\` of \`$DEV\`" ; return $unknown_device_type_errno ;;
     esac
 }
 
-######################################################################
+main-backup() {
+    local use_gzip=1
+    local dry_run=
+    local backup_selection=default
+    while [ $# != 0 ] ; do
+        case "$1" in
+            -n|--dry-run) dry_run=1 ; shift ;;
+            -Z|--no-gzip) use_gzip= ; shift ;;
+            --headers) backup_selection=headers ; shift ;;
+            --parts) backup_selection=parts ; shift ;;
+            --dd) use_only_cmd=dd ; shift ;;
+            --partclone) use_only_cmd=partclone ; shift ;;
+            --) shift ;;
+            -*) err "Unkown option \`$1\`$nl$seeusage" ; return $unknown_option_errno ;;
+            *) break ;;
+        esac
+    done
+    [ $# = 0 ] && { err "Backup action need at least one parameter: DEV$nl$seeusage" ; return $invalid_request_errno ; }
+    local folder="$2"
+    [ $# -lt 2 ] && folder=.
+    local backup_cmds=
+    backup_cmds=$(USE_GZIP=$use_gzip USE_ONLY_CMD=$use_only_cmd BACKUP_SELECTION="$backup_selection" DEV="$1" FOLDER="$folder" -make-backup-cmds) || return $?
+    [ -z "$backup_cmds" ] && { warn "Nothing to backup" ; return $process_stopped_errno ; }
+    echo "$backup_cmds"
+    [ $dry_run ] && return 0
+    echo -n "
+Start backup? [y/N] "
+    local answer=
+    IFS= read -r answer
+    [ "$answer" != y ] && { warn "Aborting" ; return $process_stopped_errno ; }
+    evallines "$backup_cmds"
+}
 
 main() {
-    test $# != 3 && echo -n "$usage" && exit 1
+    while [ $# != 0 ] ; do
+        case "$1" in
+            -h|--help) log "$usage" ; return 0 ;;
+            --info) log "$info" ; return 0 ;;
+            --) shift ; break ;;
+            -*) err "Unkown option \`$1\`$nl$seeusage" ; return $unknown_option_errno ;;
+            *) break ;;
+        esac
+    done
     case "$1" in
-        backup)
-            check_device_existence /dev/"$3" || exit 1
-            backup "$2" "$3"
-            exit $?
-            ;;
-        restore)
-            check_device_existence /dev/"$3" || exit 1
-            restore "$2" "$3"
-            exit $?
-            ;;
-        backup-table)
-            check_device_existence /dev/"$3" || exit 1
-            backup_table "$2" "$3"
-            exit $?
-            ;;
-        restore-table)
-            check_device_existence /dev/"$3" || exit 1
-            restore_table "$2" "$3"
-            exit $?
-            ;;
-        backup-amorce)
-            check_device_existence /dev/"$3" || exit 1
-            backup_amorce "$2" "$3"
-            exit $?
-            ;;
-        restore-amorce)
-            check_device_existence /dev/"$3" || exit 1
-            restore_amorce "$2" "$3"
-            exit $?
-            ;;
-        backup-start)
-            check_device_existence /dev/"$3" || exit 1
-            backup_start "$2" "$3"
-            exit $?
-            ;;
-        restore-start)
-            check_device_existence /dev/"$3" || exit 1
-            restore_start "$2" "$3"
-            exit $?
-            ;;
-        backup-partclone)
-            check_device_existence /dev/"$3" || exit 1
-            backup_filesystem_partclone "$2" "$3"
-            exit $?
-            ;;
-        restore-partclone)
-            check_device_existence /dev/"$3" || exit 1
-            restore_filesystem_partclone "$2" "$3"
-            exit $?
-            ;;
-        backup-tar)
-            check_device_existence /dev/"$3" || exit 1
-            backup_filesystem_targz "$2" "$3"
-            exit $?
-            ;;
-        restore-tar)
-            check_device_existence /dev/"$3" || exit 1
-            restore_filesystem_targz "$2" "$3"
-            exit $?
-            ;;
-        backup-ddgz)
-            check_device_existence /dev/"$3" || exit 1
-            backup_device_ddgz "$2" "$3"
-            exit $?
-            ;;
-        restore-ddgz)
-            check_device_existence /dev/"$3" || exit 1
-            restore_device_ddgz "$2" "$3"
-            exit $?
-            ;;
-        '') echo "$usage" ; exit 0 ;;
-        *) echo "$usage" ; exit 1 ;;
+        list) lsblk -o KNAME,TYPE,FSTYPE,SIZE,LABEL,UUID,MOUNTPOINT ;;
+        restore) shift ; main-restore "$@" ;;
+        backup) shift ; main-backup "$@" ;;
+        '') err "$seeusage" ; return $invalid_request_errno ;;
+        *) err "Unknown action \`$1\`$nl$seeusage" ; return $unknown_action_errno ;;
     esac
 }
 main "$@"
-
-################################################################################
-# #!/usr/bin/bash
-# # dependencies partclone, sfdisks, lsblk
-
-# usage="$0 --help"
-# ghost_usage="$0 ghost [-d ]<dev/part> [-t ]<ghost_folder> [-n <name>] [-e swap,vfat,...]"
-# restore_usage="$0 restore [-t ]<ghost_folder|ghost_file> [-d ]<dev/part>"
-
-# main() {
-#     # DEST=<destination> ACTION=<action> DEV=<dev> NAME=<name> main
-#     local lsblk_output
-#     test ! "$ACTION" && ACTION="$1"
-#     shift
-#     if [ "$ACTION" = "ghost" ] ; then
-#         DEV="$DEV" DEST="$DEST" ghost "$@"
-#     elif [ "$ACTION" = "restore" ] ; then
-#         ### RESTORE ###
-#         while [ $# != 0 ] ; do
-#             test ! "$DEST" && DEST="$1" && shift && continue
-#             test ! "$DEV" && DEV="$1" && shift && continue
-#         done
-#         Todo
-#     else
-#         ### ERROR ###
-#         echo "$usage" && exit 1
-#     fi
-# }
-
-# ghost() {
-#     # DEST=<destination> NAME=<name> DEV=<dev> ghost
-#     while [ $# != 0 ] ; do
-#         test ! "$DEV" && DEV="$1" && shift && continue
-#         test ! "$DEST" && DEST="$1" && shift && continue
-#     done
-#     (test ! "$DEV" || test ! "$DEST") && echo "$ghost_usage" && exit 1
-
-#     lsblk_output=$(lsblk -nro NAME,TYPE "$DEV") || exit 2
-#     dev_type=$(echo "$lsblk_output" | head -n 1 | cut -d ' ' -f 2)
-#     mkdir -p "$DEST" || exit 3
-#     cd "$DEST"
-#     if [ "$dev_type" = "disk" ] ; then
-#         DEV="$DEV" NAME="$NAME" ghost_mbr || exit 5
-#         local partitions
-#         partitions=$(echo "$lsblk_output" | grep "part" | cut -d ' ' -f 1)
-#         while [ "$partitions" ] ; do
-#             local part
-#             part=$(echo "$partitions" | head -n 1)
-#             PART="/dev/$part" NAME="$NAME" ghost_part || exit 6
-#             partitions=$(echo "$partitions" | tail -n +2)
-#         done
-#     elif [ "$dev_type" = "part" ] ; then
-#         PART="$DEV" NAME="$NAME" ghost_part || exit 6
-#     else
-#         echo "Unknown device type '$dev_type'"
-#         exit 4
-#     fi
-# }
-
-# ghost_mbr() {
-#     # DEV=<dev> NAME=<name> ghost_mbr
-#     test ! "$DEV" && return 1
-#     dd if=$DEV of=mbr.bin    bs=512 count=1
-#     dd if=$DEV of=amorce.bin bs=446 count=1
-#     sfdisk -d $DEV > $NAME.$(basename $DEV).sfdisk
-# }
-
-# ghost_part() {
-#     # PART=<part> NAME=<name> ghost_part
-#     local tmp
-#     local part_type
-#     tmp=$(lsblk -nro FSTYPE "$PART" | head -n 1)
-#     echo "$tmp" | egrep "^$gbl_except\$" > /dev/null && return 0
-#     part_type="$tmp"
-#     partclone.$part_type -c -s $PART |
-#         gzip -c > $NAME.$(basename "$PART").partclone.$part_type.gz
-# }
-
-# restore_mbr() {
-#     # DEV=<dev> restore_mbr
-#     # dd if=mbr.bin of=/dev/$(SDX)
-#     # sfdisk --force /dev/$(SDX) < $(NAME).$(SDX).sfdisk
-#     Todo
-# }
-
-# restore_part() {
-#     # PART=<part> restore_part
-#     # zcat $(NAME).$(SDX)1.partclone.ntfs.gz | partclone.restore -o /dev/$(SDX)1
-#     # zcat $(NAME).$(SDX)2.partclone.ntfs.gz | partclone.restore -o /dev/$(SDX)2
-#     # zcat $(NAME).$(SDX)3.partclone.ntfs.gz | partclone.restore -o /dev/$(SDX)3
-#     # zcat $(NAME).$(SDX)4.partclone.fat.gz  | partclone.restore -o /dev/$(SDX)4
-#     Todo
-# }
-
-# gbl_except="(swap)"             # (swap|btrfs|lol)
-# gbl_name=$(uname -n)
-# gbl_dest=""
-# gbl_action=""
-# gbl_device=""
-# gbl_temp=$(getopt -s bash -o ht:n:a:d:e: -l help,destination:,name:,action:,device:,except: -n "$0" -- "$@") || exit 1
-# eval set -- "$gbl_temp"
-# while true ; do
-#     case "$1" in
-#         -h|--help) echo "$usage" ; echo "$ghost_usage" ;
-#             echo "$restore_usage" ; exit 0 ;;
-#         -t|--destination) gbl_dest="$2" ; shift 2 ;;
-#         -n|--name) gbl_name="$2" ; shift 2 ;;
-#         -a|--action) gbl_action="$2" ; shift 2 ;;
-#         -d|--device) gbl_device="$2" ; shift 2 ;;
-#         -e|--except) gbl_except="($(echo "$2" | tr , \|))" ; shift 2 ;;
-#         --) shift ; break ;;
-#         *) exit 2 ;;
-#     esac
-# done
-
-# DEST="$gbl_dest" ACTION="$gbl_action" DEV="$gbl_device" NAME="$gbl_name" main "$@"
