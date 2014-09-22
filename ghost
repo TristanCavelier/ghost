@@ -1,6 +1,6 @@
 #!/bin/bash
 
-version="2.0.0"
+version="2.0.1"
 
 #  Copyright (c) 2014 Tristan Cavelier <t.cavelier@free.fr>
 #
@@ -149,6 +149,7 @@ unknown_option_errno=3
 unknown_device_type_errno=2
 invalid_partition_errno=2
 process_stopped_errno=1
+process_error_errno=1
 
 
 __print_color() {
@@ -318,6 +319,12 @@ blk-uuid() { lsblk -rno UUID "$1" | head -n 1 ; }
 blk-uuids() { lsblk -rno UUID "$1" ; }
 blk-type() { lsblk -rno TYPE "$1" | head -n 1 ; }
 blk-fstype() { lsblk -rno FSTYPE "$1" | head -n 1 ; }
+sfdisk-start() {
+    local start=
+    start=$(sfdisk -d "$1" 2>/dev/null | grep -v 'size= *0,' | grep -o 'start= *[0-9]*' | sort | head -n 1 | grep -o '[0-9]*$')
+    [ "${PIPESTATUS[0]}" != 0 ] && return $process_error_errno
+    [ ${start:-0} -gt 2048 ] && echo 2048 || echo $start
+}
 ls-part-of-disk() { lsblk -rno KNAME,TYPE | grep 'part$' | grep -E -o '^\S+' | sed 's,^,/dev/,g' ; }
 
 -make-backup-cmds-for-dd-entire-disk() {
@@ -349,9 +356,9 @@ ls-part-of-disk() { lsblk -rno KNAME,TYPE | grep 'part$' | grep -E -o '^\S+' | s
     # USE_GZIP= DISK= FOLDER= cmd
     local eDISK=$(encode-name-component "$DISK")
     local qDISK=$(quote "$DISK")
-    # TODO get start sector, do dd count=$startsector (max 2048)
+    local start= ; start=$(sfdisk-start "$DISK") || return $?
     # DISK.start.bin
-    echo "dd if=$qDISK of=$(quote "$FOLDER/$eDISK.start.bin") count=2048"
+    echo "dd if=$qDISK of=$(quote "$FOLDER/$eDISK.start.bin") count=$start"
     # DISK.mbr.bin
     echo "dd if=$qDISK of=$(quote "$FOLDER/$eDISK.mbr.bin") count=1 bs=512"
     # DISK.amorce.bin

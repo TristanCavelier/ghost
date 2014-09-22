@@ -1,7 +1,7 @@
 ghost
 =====
 
-Bash ghost utility using partclone or dd. (version 2.0.0)
+Bash ghost utility using partclone or dd. (version 2.0.1)
 
 - [What can be saved?](#what-can-be-saved)
 - [Examples](#examples)
