@@ -1,6 +1,6 @@
-#!/bin/bash
+#!/bin/sh
 
-version="2.0.1"
+version="2.1.0"
 
 #  Copyright (c) 2014 Tristan Cavelier <t.cavelier@free.fr>
 #
@@ -28,7 +28,9 @@ version="2.0.1"
 # |___________________________________________________________________|
 
 # dependencies:
+# basename
 # cut
+# echo
 # dd
 # grep
 # gzip
@@ -36,17 +38,19 @@ version="2.0.1"
 # lsblk
 # mkswap
 # partclone (optional)
+# printf
+# read
 # sed
 # sfdisk
 # zcat
 
 cmd=$(basename "$0")
 usage="Usage:
-    $cmd list                               # show a list of connected block devices
-    $cmd restore [OPTION] [FOLDER]          # restore disks/partitions from files in FOLDER
-    $cmd backup [OPTION] DEV [FOLDER]       # backup entire disk/part in FOLDER
+    $cmd list                                # show a list of connected block devices
+    $cmd restore [OPTION] [FOLDER]           # restore disks/partitions from files in FOLDER
+    $cmd backup [OPTION] DEV [FOLDER]        # backup entire disk/part in FOLDER
 
-    $cmd restore [OPTION] FILE              # restore headers/partitions from FILE
+    $cmd restore [OPTION] [FILES_OR_FOLDERS] # restore headers/partitions from FILE
     $cmd [OPTION]
 
   DEV can be either DISK or PART
@@ -151,126 +155,127 @@ invalid_partition_errno=2
 process_stopped_errno=1
 process_error_errno=1
 
-
-__print_color() {
-   local nl='\n'
-   local color="$1"
-   shift
-   [ "$1" = -n ] && nl= && shift
-   printf "$color%s\x1b[0m$nl" "$*"
-}
-__print_no_color() {
-   local nl='\n'
-   shift
-   [ "$1" = -n ] && nl= && shift
-   printf "%s$nl" "$*"
-}
-__print_cmd=__print_color
-log() { $__print_cmd '' "$@" ;}
-info() { $__print_cmd '\x1b[36;1m' "$@" ;}
-warn() { $__print_cmd '\x1b[33;1m' "$@" 1>&2 ;}
-err() { $__print_cmd '\x1b[31;1m' "$@" 1>&2 ;}
 nl="
 "
+print() { printf "%s" "$*" ; }
+echoo() {
+    [ "$1" = -n ] && { shift ; printf "%s" "$*" ; return $? ; }
+    printf "%s$nl" "$*"
+}
+log() { echoo "$@" ;}
+info() { tput setaf 6 ; tput bold ; print '->  ' ; echoo "$@" ; tput sgr0 ;}
+warn() { ( tput setaf 3 ; tput bold ; print '/!\ ' ; echoo "$@" ; tput sgr0 ; ) 1>&2 ; }
+err() { ( tput setaf 1 ; tput bold ; print 'ERR ' ; echoo "$@" ; tput sgr0 ; ) 1>&2 ; }
+noout() { "$@" >/dev/null 2>&1 ; }
+
+IFS=
 
 ######################################################################
 # Chars forbidden in ntfs "/\?<>:
 # Name separator is .
 # Name escape char pattern is %HH (where H is a hexadecimal digit)
 
-encode-name-component() {
-    local tmp="$1"
-    tmp=${tmp//%/%25}
-    tmp=${tmp//\"/%22}
-    tmp=${tmp//\//%2F}
-    tmp=${tmp//\?/%5C}
-    tmp=${tmp//</%3F}
-    tmp=${tmp//>/%3C}
-    tmp=${tmp//:/%3A}
-    tmp=${tmp//./%2E}
-    tmp=${tmp// /%20}
-    printf "%s" "$tmp"
+encode_name_component() {
+    print "$1" | sed \
+        -e 's,%,%25,g' \
+        -e 's,",%22,g' \
+        -e 's,/,%2F,g' \
+        -e 's,?,%5C,g' \
+        -e 's,<,%3F,g' \
+        -e 's,>,%3C,g' \
+        -e 's,:,%3A,g' \
+        -e 's,\.,%2E,g' \
+        -e 's, ,%20,g'
 }
 
-decode-name-component() {
-    local tmp="$1"
-    tmp=${tmp//%20/ }
-    tmp=${tmp//%2[eE]/.}
-    tmp=${tmp//%3[aA]/:}
-    tmp=${tmp//%3[cC]/>}
-    tmp=${tmp//%3[fF]/<}
-    tmp=${tmp//%5[cC]/\?}
-    tmp=${tmp//%2[fF]/\/}
-    tmp=${tmp//%22/\"}
-    tmp=${tmp//%25/%}
-    printf "%s" "$tmp"
+decode_name_component() {
+    print "$1" | sed \
+        -e 's,%20, ,g' \
+        -e 's,%2e,.,gi' \
+        -e 's,%3a,:,gi' \
+        -e 's,%3c,>,gi' \
+        -e 's,%3f,<,gi' \
+        -e 's,%5c,?,gi' \
+        -e 's,%2f,/,gi' \
+        -e 's,%22,",g' \
+        -e 's,%25,%,g'
 }
 
-quote() { printf "%s" \'${1//\'/\'\\\'\'}\' ; }
-evallines() { echo " $1" | while IFS= read -r line ; do eval " $line" || return 1 ; done ; }
+quote() { print \' ; print "$1" | sed s,\',\'\\\\\'\',g ; print \' ; }
+evallines() { local line ; print "$1" | while read -r line ; do eval " $line" || return 1 ; done ; }
+envv() {
+    # like `env` but we can use functions defined in this script
+    local locals
+    while [ $# != 0 ] ; do
+        print "$1" | noout grep '^[a-zA-Z_][a-zA-Z0-9_]*=.*$' || break
+        locals="$locals $(quote "$1")"
+        shift
+    done
+    [ "$locals" ] && eval "local$locals"
+    "$@"
+}
 
--make-restore-cmds-from-file() {
-    # ADD_SORT_INDEX= IGNORE_UNKNOWN_FILES= FORBID_SUB_FOLDERS= FILE= cmd
-    local basename=$(basename "$FILE")
-    local qFILE=$(quote "$FILE")
+make_restore_cmds_from_file() {
+    # envv ADD_SORT_INDEX= IGNORE_UNKNOWN_FILES= FORBID_SUB_FOLDERS= FILE= cmd
+    local basename=$(basename "$FILE") qFILE=$(quote "$FILE") qdev qdisk qpart qlabel quuid
     if [ -d "$FILE" ] ; then
         [ "$FORBID_SUB_FOLDERS" ] && return 0
-        FOLDER="$FILE" FORBID_SUB_FOLDERS=1 -make-restore-cmds-from-folder
+        envv FOLDER="$FILE" FORBID_SUB_FOLDERS=1 make_restore_cmds_from_folder
         return $?
     fi
     # DEV.dd.bin[.gz]
-    if echo "$basename" | grep -E '^[^.]+\.dd\.bin(\.gz)?$' >/dev/null ; then
-        local qdev=$(quote "$(decode-name-component "$(echo "$basename" | cut -d . -f 1)")")
-        [ "$ADD_SORT_INDEX" ] && echo -n 'a '
-        if echo "$basename" | grep '\.gz$' >/dev/null ; then
+    if print "$basename" | grep -E '^[^.]+\.dd\.bin(\.gz)?$' >/dev/null ; then
+        qdev=$(quote "$(decode_name_component "$(print "$basename" | cut -d . -f 1)")")
+        [ "$ADD_SORT_INDEX" ] && print 'a '
+        if print "$basename" | grep '\.gz$' >/dev/null ; then
             echo "zcat $qFILE | dd of=$qdev"
         else
             echo "dd if=$qFILE of=$qdev"
         fi
     # DISK.sfdisk[.gz]
-    elif echo "$basename" | grep -E '^[^.]+\.sfdisk(\.gz)?$' >/dev/null ; then
-        local qdisk=$(quote "$(decode-name-component "$(echo "$basename" | cut -d . -f 1)")")
-        [ "$ADD_SORT_INDEX" ] && echo -n 'b '
-        if echo "$basename" | grep '\.gz$' >/dev/null ; then
+    elif print "$basename" | grep -E '^[^.]+\.sfdisk(\.gz)?$' >/dev/null ; then
+        qdisk=$(quote "$(decode_name_component "$(print "$basename" | cut -d . -f 1)")")
+        [ "$ADD_SORT_INDEX" ] && print 'b '
+        if print "$basename" | grep '\.gz$' >/dev/null ; then
             echo "zcat $qFILE | sfdisk --force $qdisk"
         else
             echo "sfdisk --force $qdisk < $qFILE"
         fi
     # DISK.start.bin
-    elif echo "$basename" | grep -E '^[^.]+\.start\.bin$' >/dev/null ; then
-        local qdisk=$(quote "$(decode-name-component "$(echo "$basename" | cut -d . -f 1)")")
-        [ "$ADD_SORT_INDEX" ] && echo -n 'c '
+    elif print "$basename" | grep -E '^[^.]+\.start\.bin$' >/dev/null ; then
+        qdisk=$(quote "$(decode_name_component "$(print "$basename" | cut -d . -f 1)")")
+        [ "$ADD_SORT_INDEX" ] && print 'c '
         echo "dd if=$qFILE of=$qdisk count=2048"
     # DISK.mbr.bin
-    elif echo "$basename" | grep -E '^[^.]+\.mbr\.bin$' >/dev/null ; then
-        local qdisk=$(quote "$(decode-name-component "$(echo "$basename" | cut -d . -f 1)")")
-        [ "$ADD_SORT_INDEX" ] && echo -n 'd '
+    elif print "$basename" | grep -E '^[^.]+\.mbr\.bin$' >/dev/null ; then
+        qdisk=$(quote "$(decode_name_component "$(print "$basename" | cut -d . -f 1)")")
+        [ "$ADD_SORT_INDEX" ] && print 'd '
         echo "dd if=$qFILE of=$qdisk bs=512 count=1"
     # DISK.amorce.bin
-    elif echo "$basename" | grep -E '^[^.]+\.amorce\.bin$' >/dev/null ; then
-        local qdisk=$(quote "$(decode-name-component "$(echo "$basename" | cut -d . -f 1)")")
-        [ "$ADD_SORT_INDEX" ] && echo -n 'e '
+    elif print "$basename" | grep -E '^[^.]+\.amorce\.bin$' >/dev/null ; then
+        qdisk=$(quote "$(decode_name_component "$(print "$basename" | cut -d . -f 1)")")
+        [ "$ADD_SORT_INDEX" ] && print 'e '
         echo "dd if=$qFILE of=$qdisk bs=446 count=1"
     # PART.partclone.bin[.gz]
-    elif echo "$basename" | grep -E '^[^.]+\.partclone.bin(\.gz)?$' >/dev/null ; then
-        local qpart=$(quote "$(decode-name-component "$(echo "$basename" | cut -d . -f 1)")")
-        [ "$ADD_SORT_INDEX" ] && echo -n 'f '
-        if echo "$basename" | grep '\.gz$' >/dev/null ; then
+    elif print "$basename" | grep -E '^[^.]+\.partclone.bin(\.gz)?$' >/dev/null ; then
+        qpart=$(quote "$(decode_name_component "$(print "$basename" | cut -d . -f 1)")")
+        [ "$ADD_SORT_INDEX" ] && print 'f '
+        if print "$basename" | grep '\.gz$' >/dev/null ; then
             echo "zcat $qFILE | partclone.restore -o $qpart"
         else
             echo "partclone.restore -o $qpart < $qFILE"
         fi
     # PART.[LABEL.]UUID.mkswap (which is empty)
-    elif echo "$basename" | grep -E '^[^.]+\.[^.]+\.[^.]+.mkswap' >/dev/null ; then
-        local qpart=$(quote "$(decode-name-component "$(echo "$basename" | cut -d . -f 1)")")
-        local qlabel=$(quote "$(decode-name-component "$(echo "$basename" | cut -d . -f 2)")")
-        local quuid=$(quote "$(decode-name-component "$(echo "$basename" | cut -d . -f 3)")")
-        [ "$ADD_SORT_INDEX" ] && echo -n 'g '
+    elif print "$basename" | grep -E '^[^.]+\.[^.]+\.[^.]+.mkswap' >/dev/null ; then
+        qpart=$(quote "$(decode_name_component "$(print "$basename" | cut -d . -f 1)")")
+        qlabel=$(quote "$(decode_name_component "$(print "$basename" | cut -d . -f 2)")")
+        quuid=$(quote "$(decode_name_component "$(print "$basename" | cut -d . -f 3)")")
+        [ "$ADD_SORT_INDEX" ] && print 'g '
         echo "mkswap -L $qlabel -U $quuid $qpart"
-    elif echo "$basename" | grep -E '^[^.]+\.[^.]+.mkswap' >/dev/null ; then
-        local qpart=$(quote "$(decode-name-component "$(echo "$basename" | cut -d . -f 1)")")
-        local quuid=$(quote "$(decode-name-component "$(echo "$basename" | cut -d . -f 2)")")
-        [ "$ADD_SORT_INDEX" ] && echo -n 'g '
+    elif print "$basename" | grep -E '^[^.]+\.[^.]+.mkswap' >/dev/null ; then
+        qpart=$(quote "$(decode_name_component "$(print "$basename" | cut -d . -f 1)")")
+        quuid=$(quote "$(decode_name_component "$(print "$basename" | cut -d . -f 2)")")
+        [ "$ADD_SORT_INDEX" ] && print 'g '
         echo "mkswap -U $quuid $qpart"
     else
         if [ -z "$IGNORE_UNKNOWN_FILES" ] ; then
@@ -280,16 +285,16 @@ evallines() { echo " $1" | while IFS= read -r line ; do eval " $line" || return 
     fi
 }
 
--make-restore-cmds-from-folder() {
-    # FOLDER= cmd
-    local _status=
+make_restore_cmds_from_folder() {
+    # envv FOLDER= cmd
+    local _status line
     ls -1 "$FOLDER" | while IFS= read -r line ; do
-        ADD_SORT_INDEX=1 IGNORE_UNKNOWN_FILES=1 FORBID_SUB_FOLDERS=1 FILE="$line" -make-restore-cmds-from-file
+        envv ADD_SORT_INDEX=1 IGNORE_UNKNOWN_FILES=1 FORBID_SUB_FOLDERS=1 FILE="$line" make_restore_cmds_from_file
     done | sort | cut -d ' ' -f 2-
 }
 
-main-restore() {
-    local dry_run=
+main_restore() {
+    local dry_run answer
     while [ $# != 0 ] ; do
         case "$1" in
             -n|--dry-run) dry_run=1 ; shift ;;
@@ -299,66 +304,64 @@ main-restore() {
         esac
     done
     if [ $# = 0 ] ; then
-        restore_cmds=$(FOLDER=. -make-restore-cmds-from-folder)
+        restore_cmds=$(envv FOLDER=. make_restore_cmds_from_folder)
     else
-        restore_cmds=$(for p in "$@" ; do FILE="$p" -make-restore-cmds-from-file ; done) || return $?
+        restore_cmds=$(for p in "$@" ; do envv FILE="$p" make_restore_cmds_from_file ; done) || return $?
     fi
     [ -z "$restore_cmds" ] && { warn "Nothing to backup" ; return $process_stopped_errno ; }
-    echo "$restore_cmds"
+    print "$restore_cmds$nl"
     [ $dry_run ] && return 0
-    echo -n "
-Start restore? [y/N] "
-    local answer=
-    IFS= read -r answer
+    print "${nl}Start restore? [y/N] "
+    read -r answer
     [ "$answer" != y ] && { warn "Aborting" ; return $process_stopped_errno ; }
     evallines "$backup_cmds"
 }
 
-blk-label() { lsblk -rno LABEL "$1" | head -n 1 ; }
-blk-uuid() { lsblk -rno UUID "$1" | head -n 1 ; }
-blk-uuids() { lsblk -rno UUID "$1" ; }
-blk-type() { lsblk -rno TYPE "$1" | head -n 1 ; }
-blk-fstype() { lsblk -rno FSTYPE "$1" | head -n 1 ; }
-sfdisk-start() {
-    local start=
-    start=$(sfdisk -d "$1" 2>/dev/null | grep -v 'size= *0,' | grep -o 'start= *[0-9]*' | sort | head -n 1 | grep -o '[0-9]*$')
-    [ "${PIPESTATUS[0]}" != 0 ] && return $process_error_errno
-    [ ${start:-0} -gt 2048 ] && echo 2048 || echo $start
+blk_label() { lsblk -rno LABEL "$1" | head -n 1 ; }
+blk_uuid() { lsblk -rno UUID "$1" | head -n 1 ; }
+blk_uuids() { lsblk -rno UUID "$1" ; }
+blk_type() { lsblk -rno TYPE "$1" | head -n 1 ; }
+blk_fstype() { lsblk -rno FSTYPE "$1" | head -n 1 ; }
+blk_logsectors() { lsblk -rno LOG-SEC "$1" | head -n 1 ; }
+sfdisk_start() {
+    local start
+    start=$(sfdisk -d "$1" 2>/dev/null | grep -v 'size= *0,' | grep -o 'start= *[0-9]*' | sort | head -n 1 | grep -o '[0-9]*$') || return 1
+    [ $start -gt 2048 ] && print 2048 || print $start
 }
-ls-part-of-disk() { lsblk -rno KNAME,TYPE | grep 'part$' | grep -E -o '^\S+' | sed 's,^,/dev/,g' ; }
+ls_part_of_disk() { lsblk -rno KNAME,TYPE | grep 'part$' | grep -E -o '^\S+' | sed 's,^,/dev/,g' ; }
 
--make-backup-cmds-for-dd-entire-disk() {
-    # USE_GZIP= DISK= FOLDER= cmd
+make_backup_cmds_for_dd_entire_disk() {
+    # envv USE_GZIP= DISK= FOLDER= cmd
     if [ "$USE_GZIP" ] ; then
-        echo "dd if=$(quote "$DISK") | gzip -c > $(quote "$FOLDER/$(encode-name-component "$DISK").dd.bin.gz")"
+        echo "dd if=$(quote "$DISK") | gzip -c > $(quote "$FOLDER/$(encode_name_component "$DISK").dd.bin.gz")"
     else
-        echo "dd if=$(quote "$DISK") > $(quote "$FOLDER/$(encode-name-component "$DISK").dd.bin")"
+        echo "dd if=$(quote "$DISK") > $(quote "$FOLDER/$(encode_name_component "$DISK").dd.bin")"
     fi
 }
 
--make-backup-cmds-for-disk() {
-    # USE_ONLY_CMD= BACKUP_SELECTION= cmd
+make_backup_cmds_for_disk() {
+    # envv USE_ONLY_CMD= BACKUP_SELECTION= cmd
     case "${BACKUP_SELECTION:-default}" in
         default|all)
             if [ "$USE_ONLY_CMD" = dd ] ; then
-                -make-backup-cmds-for-dd-entire-disk
+                envv make_backup_cmds_for_dd_entire_disk
             else
-                -make-backup-cmds-for-disk-headers && -make-backup-cmds-for-disk-parts
+                envv make_backup_cmds_for_disk_headers && make_backup_cmds_for_disk_parts
             fi
             ;;
-        headers) -make-backup-cmds-for-disk-headers ;;
-        parts) -make-backup-cmds-for-disk-parts ;;
+        headers) envv make_backup_cmds_for_disk_headers ;;
+        parts) envv make_backup_cmds_for_disk_parts ;;
         *) err "Unknown backup selection \`$BACKUP_SELECTION\`" ; return $invalid_request_errno ;;
     esac
 }
 
--make-backup-cmds-for-disk-headers() {
-    # USE_GZIP= DISK= FOLDER= cmd
-    local eDISK=$(encode-name-component "$DISK")
-    local qDISK=$(quote "$DISK")
-    local start= ; start=$(sfdisk-start "$DISK") || return $?
+make_backup_cmds_for_disk_headers() {
+    # envv USE_GZIP= DISK= FOLDER= cmd
+    local eDISK=$(encode_name_component "$DISK") qDISK=$(quote "$DISK") start=$(sfdisk_start "$DISK") logsec=$(blk_logsectors "$DISK")
     # DISK.start.bin
-    echo "dd if=$qDISK of=$(quote "$FOLDER/$eDISK.start.bin") count=$start"
+    [ -z "$start" ] && { err "Cannot retrieve first start sector" ; return $process_error_errno ; }
+    [ -z "$logsec" ] && warn "Cannot get LOG-SEC of \`$DISK\`"
+    echo "dd if=$qDISK of=$(quote "$FOLDER/$eDISK.start.bin") count=$start ${logsec:+bs=}${logsec}"
     # DISK.mbr.bin
     echo "dd if=$qDISK of=$(quote "$FOLDER/$eDISK.mbr.bin") count=1 bs=512"
     # DISK.amorce.bin
@@ -371,61 +374,59 @@ ls-part-of-disk() { lsblk -rno KNAME,TYPE | grep 'part$' | grep -E -o '^\S+' | s
     fi
 }
 
--make-backup-cmds-for-disk-parts() {
-    # DISK= cmd
-    ls-part-of-disk "$DISK" | while IFS= read -r part ; do
-        PART="$part" BACKUP_SELECTION=default -make-backup-cmds-for-part
+make_backup_cmds_for_disk_parts() {
+    # envv DISK= cmd
+    local part
+    ls_part_of_disk "$DISK" | while read -r part ; do
+        envv PART="$part" BACKUP_SELECTION=default make_backup_cmds_for_part
     done
 }
 
--make-backup-cmds-for-part() {
-    # USE_GZIP= BACKUP_SELECTION= USE_ONLY_CMD= PART= FOLDER= cmd
+make_backup_cmds_for_part() {
+    # envv USE_GZIP= BACKUP_SELECTION= USE_ONLY_CMD= PART= cmd
     [ "${BACKUP_SELECTION:-default}" != default ] && { err "Invalid selection \`$BACKUP_SELECTION\`" ; return $invalid_request_errno ; }
-    local ePART=$(encode-name-component "$PART")
-    local qPART=$(quote "$PART")
-    local fstype=$(blk-fstype "$PART")
+    local ePART=$(encode_name_component "$PART") qPART=$(quote "$PART") fstype=$(blk_fstype "$PART") label elabel uuid
+    qePART=$(quote "$ePART")
     # PART.[LABEL.]UUID.mkswap
     if [ "$fstype" = swap ] ; then
-        local label=$(blk-label "$PART")
-        local elabel=$(encode-name-component "$label")
-        local uuid=$(blk-uuid "$PART")
+        label=$(blk_label "$PART")
+        elabel=$(encode_name_component "$label")
+        uuid=$(blk_uuid "$PART")
         [ "$uuid" ] || { err "Part \`$PART\` has no uuid" ; return $invalid_partition_errno ; }
-        echo "echo -n > $(quote "$ePART.${elabel:-}${label:+.}$uuid.mkswap")"
+        echo "echo -n > $(quote "$FOLDER/$ePART.${elabel:-}${label:+.}$uuid.mkswap")"
     # PART.parclone.bin[.gz]
-    elif [ "${USE_ONLY_CMD:-partclone}" = partclone ] && which partclone."$fstype" &>/dev/null ; then
+    elif [ "${USE_ONLY_CMD:-partclone}" = partclone ] && noout which partclone."$fstype" ; then
         if [ "$USE_GZIP" ] ; then
-            echo "partclone.$fstype -c -s $qPART | gzip -c > $ePART.partclone.bin.gz"
+            echo "partclone.$fstype -c -s $qPART | gzip -c > $(quote "$FOLDER/$ePART.partclone.bin.gz")"
         else
-            echo "partclone.$fstype -c -s $qPART > $ePART.partclone.bin"
+            echo "partclone.$fstype -c -s $qPART > $(quote "$FOLDER/$ePART.partclone.bin")"
         fi
     # PART.dd.bin[.gz]
     elif [ "${USE_ONLY_CMD:-dd}" = dd ] ; then
         if [ "$USE_GZIP" ] ; then
-            echo "dd if=$qPART | gzip -c > $ePART.dd.bin.gz"
+            echo "dd if=$qPART | gzip -c > $(quote "$FOLDER/$ePART.dd.bin.gz")"
         else
-            echo "dd if=$ePART of=$ePART.bin"
+            echo "dd if=$qPART of=$(quote "$FOLDER/$ePART.dd.bin")"
         fi
     else
-        err "No backup command found for \`$PART\`"
+        warn "No backup command found for \`$PART\`"
         return $unknown_command_errno
     fi
 }
 
--make-backup-cmds() {
-    # DEV= FOLDER= cmd
-    local type=$(blk-type "$DEV" 2>/dev/null)
+make_backup_cmds() {
+    # envv DEV= cmd
+    local type=$(blk_type "$DEV" 2>/dev/null)
     case "$type" in
-        disk) DISK="$DEV" -make-backup-cmds-for-disk ;;
-        part) PART="$DEV" -make-backup-cmds-for-part ;;
+        disk) envv DISK="$DEV" make_backup_cmds_for_disk ;;
+        part) envv PART="$DEV" make_backup_cmds_for_part ;;
         '') err "Unknown block device type of \`$DEV\`" ; return $unknown_device_type_errno ;;
         *) err "Unknown block device \`$type\` of \`$DEV\`" ; return $unknown_device_type_errno ;;
     esac
 }
 
-main-backup() {
-    local use_gzip=1
-    local dry_run=
-    local backup_selection=default
+main_backup() {
+    local use_gzip=1 dry_run backup_selection=default use_only_cmd folder backup_cmds answer
     while [ $# != 0 ] ; do
         case "$1" in
             -n|--dry-run) dry_run=1 ; shift ;;
@@ -440,17 +441,14 @@ main-backup() {
         esac
     done
     [ $# = 0 ] && { err "Backup action need at least one parameter: DEV$nl$seeusage" ; return $invalid_request_errno ; }
-    local folder="$2"
+    folder="$2"
     [ $# -lt 2 ] && folder=.
-    local backup_cmds=
-    backup_cmds=$(USE_GZIP=$use_gzip USE_ONLY_CMD=$use_only_cmd BACKUP_SELECTION="$backup_selection" DEV="$1" FOLDER="$folder" -make-backup-cmds) || return $?
+    backup_cmds=$(envv USE_GZIP=$use_gzip USE_ONLY_CMD=$use_only_cmd BACKUP_SELECTION="$backup_selection" DEV="$1" FOLDER="$folder" make_backup_cmds) || return $?
     [ -z "$backup_cmds" ] && { warn "Nothing to backup" ; return $process_stopped_errno ; }
-    echo "$backup_cmds"
+    print "$backup_cmds$nl"
     [ $dry_run ] && return 0
-    echo -n "
-Start backup? [y/N] "
-    local answer=
-    IFS= read -r answer
+    print "${nl}Start backup? [y/N] "
+    read -r answer
     [ "$answer" != y ] && { warn "Aborting" ; return $process_stopped_errno ; }
     evallines "$backup_cmds"
 }
@@ -459,6 +457,7 @@ main() {
     while [ $# != 0 ] ; do
         case "$1" in
             -h|--help) log "$usage" ; return 0 ;;
+            -v|--version) log "$version" ; return 0 ;;
             --info) log "$info" ; return 0 ;;
             --) shift ; break ;;
             -*) err "Unkown option \`$1\`$nl$seeusage" ; return $unknown_option_errno ;;
@@ -467,8 +466,8 @@ main() {
     done
     case "$1" in
         list) lsblk -o KNAME,TYPE,FSTYPE,SIZE,LABEL,UUID,MOUNTPOINT ;;
-        restore) shift ; main-restore "$@" ;;
-        backup) shift ; main-backup "$@" ;;
+        restore) shift ; main_restore "$@" ;;
+        backup) shift ; main_backup "$@" ;;
         '') err "$seeusage" ; return $invalid_request_errno ;;
         *) err "Unknown action \`$1\`$nl$seeusage" ; return $unknown_action_errno ;;
     esac

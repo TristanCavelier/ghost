@@ -1,7 +1,7 @@
 ghost
 =====
 
-Bash ghost utility using partclone or dd. (version 2.0.1)
+Bash ghost utility using partclone or dd. (version 2.1.0)
 
 - [What can be saved?](#what-can-be-saved)
 - [Examples](#examples)
@@ -77,11 +77,11 @@ Examples
 Usage
 -----
 
-    ghost list                               # show a list of connected block devices
-    ghost restore [OPTION] [FOLDER]          # restore disks/partitions from files in FOLDER
-    ghost backup [OPTION] DEV [FOLDER]       # backup entire disk/part in FOLDER
+    ghost list                                # show a list of connected block devices
+    ghost restore [OPTION] [FOLDER]           # restore disks/partitions from files in FOLDER
+    ghost backup [OPTION] DEV [FOLDER]        # backup entire disk/part in FOLDER
 
-    ghost restore [OPTION] FILE              # restore headers/partitions from FILE
+    ghost restore [OPTION] [FILES_OR_FOLDERS] # restore headers/partitions from FILE
     ghost [OPTION]
 
 - `DEV` can be either `DISK` or `PART`
