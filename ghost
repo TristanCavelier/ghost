@@ -1,6 +1,6 @@
 #!/bin/sh
 
-version="2.1.0"
+version="2.2.0"
 
 #  Copyright (c) 2014 Tristan Cavelier <t.cavelier@free.fr>
 #
@@ -28,20 +28,23 @@ version="2.1.0"
 # |___________________________________________________________________|
 
 # dependencies:
+# awk
 # basename
 # cut
-# echo
 # dd
+# echo
 # grep
 # gzip
+# head
 # ls
 # lsblk
 # mkswap
 # partclone (optional)
+# parted
 # printf
 # read
 # sed
-# sfdisk
+# sort
 # zcat
 
 cmd=$(basename "$0")
@@ -77,27 +80,20 @@ usage="Usage:
 "
 info="\
 For \`$cmd restore\`, it will look for this kind of files:
-    ./DEV.dd.bin[.gz]
-    ./DISK.sfdisk[.gz]
     ./DISK.start.bin
-    ./DISK.mbr.bin
-    ./DISK.amorce.bin
+    ./DEV.dd.bin[.gz]
     ./PART.partclone.bin[.gz]
     ./PART.[LABEL.]UUID.mkswap (which is empty)
 
 For \`$cmd backup -- DISK\`, it will create:
-    ./DISK.start.bin
-    ./DISK.mbr.bin
-    ./DISK.amorce.bin
-    ./DISK.sfdisk.gz
+    ./DISK.parted.txt
+    ./DISK.start.bin (maximum 1MiB)
     ./PART.partclone.bin.gz (or PART.dd.bin.gz if FSTYPE is not supported)
     ./PART.[LABEL.]UUID.mkswap
 
 For \`$cmd backup --headers -- DISK\`, it will create:
-    ./DISK.start.bin
-    ./DISK.mbr.bin
-    ./DISK.amorce.bin
-    ./DISK.sfdisk.gz
+    ./DISK.parted.txt
+    ./DISK.start.bin (maximum 1MiB)
 
 For \`$cmd backup -- PART\`, it will create:
     ./PART.partclone.bin.gz (or PART.dd.bin.gz if FSTYPE is not supported)
@@ -106,23 +102,16 @@ For \`$cmd backup -- PART\`, it will create:
 
 (\`./\` can also be \`FOLDER/\`.)
 
+Command used to get DISK.parted.txt: parted -s DISK -- unit B print > DISK.parted.txt
+
+Command used to get DISK.start.bin: dd if=DISK of=DISK.start.bin count=START_SECTOR bs=PHYSICAL_SECTOR_SIZE
+restore with: dd if=DISK.start.bin of=DISK
+
 Command used to get DEV.dd.bin: dd if=DEV of=DEV.dd.bin
 restore with: dd if=DEV.dd.bin of=DEV
 
 Command used to get DEV.dd.bin.gz: dd if=DEV | gzip -c > DEV.dd.bin.gz
 restore with: zcat DEV.dd.bin.gz | dd of=DEV
-
-Command used to get DISK.sfdisk: sfdisk -d DISK > DISK.sfdisk
-restore with: sfdisk --force DISK < DISK.sfdisk
-
-Command used to get DISK.sfdisk.gz: sfdisk -d DISK | gzip -c > DISK.sfdisk.gz
-restore with: zcat DISK.sfdisk.gz | sfdisk --force DISK
-
-Command used to get DISK.mbr.bin: dd if=DISK of=DISK.mbr.bin bs=512 count=1
-restore with: dd if=DISK.mbr.bin of=DISK bs=512 count=1
-
-Command used to get DISK.amorce.bin: dd if=DISK of=DISK.amorce.bin bs=446 count=1
-restore with: dd if=DISK.amorce.bin of=DISK bs=446 count=1
 
 Command used to get PART.partclone.bin: partclone.FSTYPE -c -s PART > PART.partclone.bin
 restore with: partclone.restore -o PART < PART.partclone.bin
@@ -202,7 +191,7 @@ decode_name_component() {
 }
 
 quote() { print \' ; print "$1" | sed s,\',\'\\\\\'\',g ; print \' ; }
-evallines() { local line ; print "$1" | while read -r line ; do eval " $line" || return 1 ; done ; }
+evallines() { local line ; print "$1$nl" | while read -r line ; do eval " $line" || warn "Exited with code $?" ; done ; }
 envv() {
     # like `env` but we can use functions defined in this script
     local locals
@@ -223,39 +212,20 @@ make_restore_cmds_from_file() {
         envv FOLDER="$FILE" FORBID_SUB_FOLDERS=1 make_restore_cmds_from_folder
         return $?
     fi
-    # DEV.dd.bin[.gz]
-    if print "$basename" | grep -E '^[^.]+\.dd\.bin(\.gz)?$' >/dev/null ; then
-        qdev=$(quote "$(decode_name_component "$(print "$basename" | cut -d . -f 1)")")
+    # DISK.start.bin
+    if print "$basename" | grep -E '^[^.]+\.start\.bin$' >/dev/null ; then
+        qdisk=$(quote "$(decode_name_component "$(print "$basename" | cut -d . -f 1)")")
         [ "$ADD_SORT_INDEX" ] && print 'a '
+        echo "dd if=$qFILE of=$qdisk"
+    # DEV.dd.bin[.gz]
+    elif print "$basename" | grep -E '^[^.]+\.dd\.bin(\.gz)?$' >/dev/null ; then
+        qdev=$(quote "$(decode_name_component "$(print "$basename" | cut -d . -f 1)")")
+        [ "$ADD_SORT_INDEX" ] && print 'c '
         if print "$basename" | grep '\.gz$' >/dev/null ; then
             echo "zcat $qFILE | dd of=$qdev"
         else
             echo "dd if=$qFILE of=$qdev"
         fi
-    # DISK.sfdisk[.gz]
-    elif print "$basename" | grep -E '^[^.]+\.sfdisk(\.gz)?$' >/dev/null ; then
-        qdisk=$(quote "$(decode_name_component "$(print "$basename" | cut -d . -f 1)")")
-        [ "$ADD_SORT_INDEX" ] && print 'b '
-        if print "$basename" | grep '\.gz$' >/dev/null ; then
-            echo "zcat $qFILE | sfdisk --force $qdisk"
-        else
-            echo "sfdisk --force $qdisk < $qFILE"
-        fi
-    # DISK.start.bin
-    elif print "$basename" | grep -E '^[^.]+\.start\.bin$' >/dev/null ; then
-        qdisk=$(quote "$(decode_name_component "$(print "$basename" | cut -d . -f 1)")")
-        [ "$ADD_SORT_INDEX" ] && print 'c '
-        echo "dd if=$qFILE of=$qdisk count=2048"
-    # DISK.mbr.bin
-    elif print "$basename" | grep -E '^[^.]+\.mbr\.bin$' >/dev/null ; then
-        qdisk=$(quote "$(decode_name_component "$(print "$basename" | cut -d . -f 1)")")
-        [ "$ADD_SORT_INDEX" ] && print 'd '
-        echo "dd if=$qFILE of=$qdisk bs=512 count=1"
-    # DISK.amorce.bin
-    elif print "$basename" | grep -E '^[^.]+\.amorce\.bin$' >/dev/null ; then
-        qdisk=$(quote "$(decode_name_component "$(print "$basename" | cut -d . -f 1)")")
-        [ "$ADD_SORT_INDEX" ] && print 'e '
-        echo "dd if=$qFILE of=$qdisk bs=446 count=1"
     # PART.partclone.bin[.gz]
     elif print "$basename" | grep -E '^[^.]+\.partclone.bin(\.gz)?$' >/dev/null ; then
         qpart=$(quote "$(decode_name_component "$(print "$basename" | cut -d . -f 1)")")
@@ -314,7 +284,7 @@ main_restore() {
     print "${nl}Start restore? [y/N] "
     read -r answer
     [ "$answer" != y ] && { warn "Aborting" ; return $process_stopped_errno ; }
-    evallines "$backup_cmds"
+    evallines "$restore_cmds"
 }
 
 blk_label() { lsblk -rno LABEL "$1" | head -n 1 ; }
@@ -323,12 +293,19 @@ blk_uuids() { lsblk -rno UUID "$1" ; }
 blk_type() { lsblk -rno TYPE "$1" | head -n 1 ; }
 blk_fstype() { lsblk -rno FSTYPE "$1" | head -n 1 ; }
 blk_logsectors() { lsblk -rno LOG-SEC "$1" | head -n 1 ; }
-sfdisk_start() {
-    local start
-    start=$(sfdisk -d "$1" 2>/dev/null | grep -v 'size= *0,' | grep -o 'start= *[0-9]*' | sort | head -n 1 | grep -o '[0-9]*$') || return 1
-    [ $start -gt 2048 ] && print 2048 || print $start
+ls_part_of_disk() { lsblk -rno KNAME,TYPE "$1" | grep 'part$' | grep -E -o '^\S+' | sed 's,^,/dev/,g' ; }
+grep_physical_sector_size() {
+    # parted -s /dev/sdx -- unit B print | cmd
+    grep -E '^Sector size \(logical/physical\): [0-9]+B/[0-9]+B$' | head -n 1 | sed 's,^Sector size (logical/physical): [0-9]\+B/\([0-9]\+\)B$,\1,' | grep -E '^[0-9]+$'
 }
-ls_part_of_disk() { lsblk -rno KNAME,TYPE | grep 'part$' | grep -E -o '^\S+' | sed 's,^,/dev/,g' ; }
+grep_partition_table_type() {
+    # parted -s /dev/sdx -- print | cmd
+    grep -E '^Partition Table: (gpt|msdos)$' | head -n 1 | sed 's,^Partition Table: \([a-z]\+\)$,\1,' | grep -E '^[a-z]+$'
+}
+grep_start_location() {
+    # parted -s /dev/sdx -- unix B print | cmd
+    awk 'BEGIN { out=0 } /^$/ { out=0 } { if (out) { print $2 } } /^Number\s/ { out=1 }' | sed 's,B$,,g' | sort -n | head -n 1 | grep -E '^[0-9]+$'
+}
 
 make_backup_cmds_for_dd_entire_disk() {
     # envv USE_GZIP= DISK= FOLDER= cmd
@@ -357,21 +334,18 @@ make_backup_cmds_for_disk() {
 
 make_backup_cmds_for_disk_headers() {
     # envv USE_GZIP= DISK= FOLDER= cmd
-    local eDISK=$(encode_name_component "$DISK") qDISK=$(quote "$DISK") start=$(sfdisk_start "$DISK") logsec=$(blk_logsectors "$DISK")
+    local eDISK=$(encode_name_component "$DISK") qDISK=$(quote "$DISK") partedoutput start startsector sectorsize
+    partedoutput=$(parted -s "$DISK" -- unit B print) || { err "Cannot print disk details with \`parted\`" ; return $process_error_errno ; }
+    start=$(print "$partedoutput" | grep_start_location) || { err "Cannot retrieve partition start locations" ; return $process_error_errno ; }
+    sectorsize=$(print "$partedoutput" | grep_physical_sector_size) || warn "Cannot retrieve physical sector size"
+    [ $start -gt 1048576 ] && start=1048576 # maximum 1MiB
+    [ -z $sectorsize ] && sectorsize=1
+    startsector=$(($start / $sectorsize))
+    [ $(($startsector * $sectorsize)) != $start ] && { sectorsize=1 ; startsector=$start ; }
+    # DISK.parted.txt
+    echo "parted -s $qDISK -- unit B print > $(quote "$FOLDER/$eDISK.parted.txt")"
     # DISK.start.bin
-    [ -z "$start" ] && { err "Cannot retrieve first start sector" ; return $process_error_errno ; }
-    [ -z "$logsec" ] && warn "Cannot get LOG-SEC of \`$DISK\`"
-    echo "dd if=$qDISK of=$(quote "$FOLDER/$eDISK.start.bin") count=$start ${logsec:+bs=}${logsec}"
-    # DISK.mbr.bin
-    echo "dd if=$qDISK of=$(quote "$FOLDER/$eDISK.mbr.bin") count=1 bs=512"
-    # DISK.amorce.bin
-    echo "dd if=$qDISK of=$(quote "$FOLDER/$eDISK.amorce.bin") count=1 bs=446"
-    # DISK.sfdisk[.gz]
-    if [ "$USE_GZIP" ] ; then
-        echo "sfdisk -d $qDISK | gzip -c > $(quote "$FOLDER/$eDISK.sfdisk.gz")"
-    else
-        echo "sfdisk -d $qDISK > $(quote "$FOLDER/$eDISK.sfdisk")"
-    fi
+    echo "dd if=$qDISK of=$(quote "$FOLDER/$eDISK.start.bin") count=$startsector bs=$sectorsize"
 }
 
 make_backup_cmds_for_disk_parts() {
