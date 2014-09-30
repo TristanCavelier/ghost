@@ -1,7 +1,7 @@
 ghost
 =====
 
-Bash ghost utility using partclone or dd. (version 2.2.0)
+Shell ghost utility using parted, partclone and dd ( {ba,da,}sh compatible ) (version 2.2.0)
 
 - [What can be saved?](#what-can-be-saved)
 - [Examples](#examples)
