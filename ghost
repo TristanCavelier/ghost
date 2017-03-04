@@ -2,7 +2,7 @@
 
 version="2.2.0"
 
-#  Copyright (c) 2014 Tristan Cavelier <t.cavelier@free.fr>
+#  Copyright (c) 2014, 2017 Tristan Cavelier <t.cavelier@free.fr>
 #
 #  This program is free software. It comes without any warranty, to
 #  the extent permitted by applicable law. You can redistribute it
@@ -303,7 +303,7 @@ grep_partition_table_type() {
     grep -E '^Partition Table: (gpt|msdos)$' | head -n 1 | sed 's,^Partition Table: \([a-z]\+\)$,\1,' | grep -E '^[a-z]+$'
 }
 grep_start_location() {
-    # parted -s /dev/sdx -- unix B print | cmd
+    # parted -s /dev/sdx -- unit B print | cmd
     awk 'BEGIN { out=0 } /^$/ { out=0 } { if (out) { print $2 } } /^Number\s/ { out=1 }' | sed 's,B$,,g' | sort -n | head -n 1 | grep -E '^[0-9]+$'
 }
 
