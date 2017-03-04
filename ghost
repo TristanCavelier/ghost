@@ -1,6 +1,6 @@
 #!/bin/sh
 
-version="2.3.0"
+version="2.3.1"
 
 #  Copyright (c) 2014, 2017 Tristan Cavelier <t.cavelier@free.fr>
 #
@@ -107,7 +107,7 @@ For \`$cmd backup -- PART\`, it will create:
 
 Command used to get DISK.parted.txt: parted -s DISK -- unit B print > DISK.parted.txt
 
-Command used to get DISK.start.bin: dd if=DISK of=DISK.start.bin count=START_SECTOR bs=PHYSICAL_SECTOR_SIZE
+Command used to get DISK.start.bin: dd if=DISK of=DISK.start.bin count=START_SECTOR ibs=PHYSICAL_SECTOR_SIZE
 restore with: dd if=DISK.start.bin of=DISK
 
 Command used to get DISK.end.bin: dd if=DISK of=DISK.end.bin skip=START_SECTOR ibs=PHYSICAL_SECTOR_SIZE
@@ -375,7 +375,7 @@ make_backup_cmds_for_disk_headers() {
     # DISK.parted.txt
     echo "parted -s $qDISK -- unit B print > $(quote "$FOLDER/$eDISK.parted.txt")"
     # DISK.start.bin
-    echo "dd if=$qDISK of=$(quote "$FOLDER/$eDISK.start.bin") count=$startsector bs=$startsectorsize"
+    echo "dd if=$qDISK of=$(quote "$FOLDER/$eDISK.start.bin") count=$startsector ibs=$startsectorsize"
     # DISK.end.bin
     echo "dd if=$qDISK of=$(quote "$FOLDER/$eDISK.end.bin") skip=$endsector ibs=$endsectorsize"
 }

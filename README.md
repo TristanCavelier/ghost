@@ -1,7 +1,7 @@
 ghost
 =====
 
-Shell ghost utility using parted, partclone and dd ( {ba,da,}sh compatible ) (version 2.3.0)
+Shell ghost utility using parted, partclone and dd ( {ba,da,}sh compatible ) (version 2.3.1)
 
 - [What can be saved?](#what-can-be-saved)
 - [Examples](#examples)
@@ -27,7 +27,7 @@ Examples
 
         # ghost backup /dev/sda
         parted -s '/dev/sda' -- unit B print > './%2Fdev%2Fsda.parted.txt'
-        dd if='/dev/sda' of='./%2Fdev%2Fsda.start.bin' count=256 bs=4096
+        dd if='/dev/sda' of='./%2Fdev%2Fsda.start.bin' count=256 ibs=4096
         dd if='/dev/sda' of='./%2Fdev%2Fsda.end.bin' skip=160041885696 ibs=4096
         partclone.vfat -c -s '/dev/sda1' | gzip -c > './%2Fdev%2Fsda1.partclone.bin.gz'
         partclone.ntfs -c -s '/dev/sda2' | gzip -c > './%2Fdev%2Fsda2.partclone.bin.gz'
@@ -48,7 +48,7 @@ Examples
 
         # ghost backup --headers /dev/sda
         parted -s '/dev/sda' -- unit B print > './%2Fdev%2Fsda.parted.txt'
-        dd if='/dev/sda' of='./%2Fdev%2Fsda.start.bin' count=256 bs=4096
+        dd if='/dev/sda' of='./%2Fdev%2Fsda.start.bin' count=256 ibs=4096
         dd if='/dev/sda' of='./%2Fdev%2Fsda.end.bin' skip=160041885696 ibs=4096
 
         ...
