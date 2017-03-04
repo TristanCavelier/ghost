@@ -1,6 +1,6 @@
 #!/bin/sh
 
-version="2.2.0"
+version="2.3.0"
 
 #  Copyright (c) 2014, 2017 Tristan Cavelier <t.cavelier@free.fr>
 #
@@ -45,6 +45,7 @@ version="2.2.0"
 # read
 # sed
 # sort
+# stat
 # zcat
 
 cmd=$(basename "$0")
@@ -88,12 +89,14 @@ For \`$cmd restore\`, it will look for this kind of files:
 For \`$cmd backup -- DISK\`, it will create:
     ./DISK.parted.txt
     ./DISK.start.bin (maximum 1MiB)
+    ./DISK.end.bin (maximum 1MiB)
     ./PART.partclone.bin.gz (or PART.dd.bin.gz if FSTYPE is not supported)
     ./PART.[LABEL.]UUID.mkswap
 
 For \`$cmd backup --headers -- DISK\`, it will create:
     ./DISK.parted.txt
     ./DISK.start.bin (maximum 1MiB)
+    ./DISK.end.bin (maximum 1MiB)
 
 For \`$cmd backup -- PART\`, it will create:
     ./PART.partclone.bin.gz (or PART.dd.bin.gz if FSTYPE is not supported)
@@ -106,6 +109,9 @@ Command used to get DISK.parted.txt: parted -s DISK -- unit B print > DISK.parte
 
 Command used to get DISK.start.bin: dd if=DISK of=DISK.start.bin count=START_SECTOR bs=PHYSICAL_SECTOR_SIZE
 restore with: dd if=DISK.start.bin of=DISK
+
+Command used to get DISK.end.bin: dd if=DISK of=DISK.end.bin skip=START_SECTOR ibs=PHYSICAL_SECTOR_SIZE
+restore with: dd if=DISK.end.bin of=DISK seek=DISK_SIZE_MINUS_BIN_SIZE ibs=1
 
 Command used to get DEV.dd.bin: dd if=DEV of=DEV.dd.bin
 restore with: dd if=DEV.dd.bin of=DEV
@@ -204,9 +210,14 @@ envv() {
     "$@"
 }
 
+grep_disk_size() {
+    # parted -s /dev/sdx -- unit B print | cmd
+    grep -E '^Disk .*: [0-9]+B$' | grep -Eo '[0-9]+'
+}
+
 make_restore_cmds_from_file() {
     # envv ADD_SORT_INDEX= IGNORE_UNKNOWN_FILES= FORBID_SUB_FOLDERS= FILE= cmd
-    local basename=$(basename "$FILE") qFILE=$(quote "$FILE") qdev qdisk qpart qlabel quuid
+    local basename=$(basename "$FILE") qFILE=$(quote "$FILE") qdev disk disksize qdisk qpart qlabel quuid filesize
     if [ -d "$FILE" ] ; then
         [ "$FORBID_SUB_FOLDERS" ] && return 0
         envv FOLDER="$FILE" FORBID_SUB_FOLDERS=1 make_restore_cmds_from_folder
@@ -217,6 +228,14 @@ make_restore_cmds_from_file() {
         qdisk=$(quote "$(decode_name_component "$(print "$basename" | cut -d . -f 1)")")
         [ "$ADD_SORT_INDEX" ] && print 'a '
         echo "dd if=$qFILE of=$qdisk"
+    # DISK.end.bin
+    elif print "$basename" | grep -E '^[^.]+\.end\.bin$' >/dev/null ; then
+        disk=$(decode_name_component "$(print "$basename" | cut -d . -f 1)")
+        disksize=$(parted -s "$disk" -- unit B print | grep_disk_size) || { err "Cannot extract disk size with \`parted\`" ; return $process_error_errno ; }
+        filesize=$(stat -c %s "$basename") || { err "Cannot print file size with \`stat\`" ; return $process_error_errno ; }
+        qdisk=$(quote "$disk")
+        [ "$ADD_SORT_INDEX" ] && print 'b '
+        echo "dd if=$qFILE of=$qdisk seek=$(($disksize - $filesize)) ibs=1"
     # DEV.dd.bin[.gz]
     elif print "$basename" | grep -E '^[^.]+\.dd\.bin(\.gz)?$' >/dev/null ; then
         qdev=$(quote "$(decode_name_component "$(print "$basename" | cut -d . -f 1)")")
@@ -306,6 +325,10 @@ grep_start_location() {
     # parted -s /dev/sdx -- unit B print | cmd
     awk 'BEGIN { out=0 } /^$/ { out=0 } { if (out) { print $2 } } /^Number\s/ { out=1 }' | sed 's,B$,,g' | sort -n | head -n 1 | grep -E '^[0-9]+$'
 }
+grep_end_location() {
+    # parted -s /dev/sdx -- unit B print | cmd
+    awk 'BEGIN { out=0 } /^$/ { out=0 } { if (out) { print $3 } } /^Number\s/ { out=1 }' | sed 's,B$,,g' | sort -n -r | head -n 1 | grep -E '^[0-9]+$'
+}
 
 make_backup_cmds_for_dd_entire_disk() {
     # envv USE_GZIP= DISK= FOLDER= cmd
@@ -334,18 +357,27 @@ make_backup_cmds_for_disk() {
 
 make_backup_cmds_for_disk_headers() {
     # envv USE_GZIP= DISK= FOLDER= cmd
-    local eDISK=$(encode_name_component "$DISK") qDISK=$(quote "$DISK") partedoutput start startsector sectorsize
+    local eDISK=$(encode_name_component "$DISK") qDISK=$(quote "$DISK") partedoutput start startsector startsectorsize end endsector endsectorsize disksize
     partedoutput=$(parted -s "$DISK" -- unit B print) || { err "Cannot print disk details with \`parted\`" ; return $process_error_errno ; }
     start=$(print "$partedoutput" | grep_start_location) || { err "Cannot retrieve partition start locations" ; return $process_error_errno ; }
-    sectorsize=$(print "$partedoutput" | grep_physical_sector_size) || warn "Cannot retrieve physical sector size"
+    end=$(print "$partedoutput" | grep_end_location) || { err "Cannot retrieve partition end locations" ; return $process_error_errno ; }
+    end=$(($end + 1))
+    disksize=$(print "$partedoutput" | grep_disk_size) || { err "Cannot print disk size" ; return $process_error_errno ; }
+    startsectorsize=$(print "$partedoutput" | grep_physical_sector_size) || warn "Cannot retrieve physical sector size"
     [ $start -gt 1048576 ] && start=1048576 # maximum 1MiB
-    [ -z $sectorsize ] && sectorsize=1
-    startsector=$(($start / $sectorsize))
-    [ $(($startsector * $sectorsize)) != $start ] && { sectorsize=1 ; startsector=$start ; }
+    [ $(($disksize - $end)) -gt 1048576 ] && end=$(($disksize - 1048576)) # maximum 1MiB
+    [ -z $startsectorsize ] && startsectorsize=1
+    endsectorsize=$startsectorsize
+    startsector=$(($start / $startsectorsize))
+    [ $(($startsector * $startsectorsize)) != $start ] && { startsectorsize=1 ; startsector=$start ; }
+    endsector=$(($end / $endsectorsize))
+    [ $(($endsector * $endsectorsize)) != $end ] && { endsectorsize=1 ; endsector=$end ; }
     # DISK.parted.txt
     echo "parted -s $qDISK -- unit B print > $(quote "$FOLDER/$eDISK.parted.txt")"
     # DISK.start.bin
-    echo "dd if=$qDISK of=$(quote "$FOLDER/$eDISK.start.bin") count=$startsector bs=$sectorsize"
+    echo "dd if=$qDISK of=$(quote "$FOLDER/$eDISK.start.bin") count=$startsector bs=$startsectorsize"
+    # DISK.end.bin
+    echo "dd if=$qDISK of=$(quote "$FOLDER/$eDISK.end.bin") skip=$endsector ibs=$endsectorsize"
 }
 
 make_backup_cmds_for_disk_parts() {

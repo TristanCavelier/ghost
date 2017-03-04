@@ -1,7 +1,7 @@
 ghost
 =====
 
-Shell ghost utility using parted, partclone and dd ( {ba,da,}sh compatible ) (version 2.2.0)
+Shell ghost utility using parted, partclone and dd ( {ba,da,}sh compatible ) (version 2.3.0)
 
 - [What can be saved?](#what-can-be-saved)
 - [Examples](#examples)
@@ -14,8 +14,10 @@ Shell ghost utility using parted, partclone and dd ( {ba,da,}sh compatible ) (ve
 What can be saved?
 ------------------
 
-The first bytes until first partition (with a maximum of 1MiB) including
-partition table, and all the partition content with `partclone` or `dd`.
+The first mega byte until first partition, the very last mega byte from the last
+partition to the end of the disk and all the partition content with `partclone`
+or `dd`. One mega byte (1MiB) is enough to store partition table (e.g. MBR, GPT)
+and a possible bootloader (e.g. Grub).
 
 
 Examples
@@ -26,6 +28,7 @@ Examples
         # ghost backup /dev/sda
         parted -s '/dev/sda' -- unit B print > './%2Fdev%2Fsda.parted.txt'
         dd if='/dev/sda' of='./%2Fdev%2Fsda.start.bin' count=256 bs=4096
+        dd if='/dev/sda' of='./%2Fdev%2Fsda.end.bin' skip=160041885696 ibs=4096
         partclone.vfat -c -s '/dev/sda1' | gzip -c > './%2Fdev%2Fsda1.partclone.bin.gz'
         partclone.ntfs -c -s '/dev/sda2' | gzip -c > './%2Fdev%2Fsda2.partclone.bin.gz'
         dd if='/dev/sda3' | gzip -c > './%2Fdev%2Fsda3.dd.bin.gz'
@@ -46,6 +49,7 @@ Examples
         # ghost backup --headers /dev/sda
         parted -s '/dev/sda' -- unit B print > './%2Fdev%2Fsda.parted.txt'
         dd if='/dev/sda' of='./%2Fdev%2Fsda.start.bin' count=256 bs=4096
+        dd if='/dev/sda' of='./%2Fdev%2Fsda.end.bin' skip=160041885696 ibs=4096
 
         ...
         # ghost backup --parts --dd /dev/sda
@@ -110,6 +114,7 @@ Detailed informations
 For `ghost restore`, it will look for this kind of files:
 
     ./DISK.start.bin
+    ./DISK.end.bin
     ./DEV.dd.bin[.gz]
     ./PART.partclone.bin[.gz]
     ./PART.[LABEL.]UUID.mkswap (which is empty)
@@ -117,12 +122,14 @@ For `ghost restore`, it will look for this kind of files:
 For `ghost backup -- DISK`, it will create:
 
     ./DISK.start.bin
+    ./DISK.end.bin
     ./PART.partclone.bin.gz (or PART.dd.bin.gz if FSTYPE is not supported)
     ./PART.[LABEL.]UUID.mkswap
 
 For `ghost backup --headers -- DISK`, it will create:
 
     ./DISK.start.bin
+    ./DISK.end.bin
 
 For `ghost backup -- PART`, it will create:
 
@@ -154,13 +161,14 @@ Here is a list of command used for this script:
 - read
 - sed
 - sort
+- stat
 - zcat
 
 
 License
 -------
 
-> Copyright (c) 2014 Tristan Cavelier <t.cavelier@free.fr>
+> Copyright (c) 2014, 2017 Tristan Cavelier <t.cavelier@free.fr>
 
 > This program is free software. It comes without any warranty, to
 > the extent permitted by applicable law. You can redistribute it
