@@ -1,6 +1,6 @@
 #!/bin/sh
 
-version="2.3.1"
+version="2.3.2"
 
 #  Copyright (c) 2014, 2017 Tristan Cavelier <t.cavelier@free.fr>
 #
@@ -323,11 +323,11 @@ grep_partition_table_type() {
 }
 grep_start_location() {
     # parted -s /dev/sdx -- unit B print | cmd
-    awk 'BEGIN { out=0 } /^$/ { out=0 } { if (out) { print $2 } } /^Number\s/ { out=1 }' | sed 's,B$,,g' | sort -n | head -n 1 | grep -E '^[0-9]+$'
+    awk 'BEGIN { out=0 } /^$/ { out=0 } { if (out) { print $2 } } /^Number/ { out=1 }' | sed 's,B$,,g' | sort -n | head -n 1 | grep -E '^[0-9]+$'
 }
 grep_end_location() {
     # parted -s /dev/sdx -- unit B print | cmd
-    awk 'BEGIN { out=0 } /^$/ { out=0 } { if (out) { print $3 } } /^Number\s/ { out=1 }' | sed 's,B$,,g' | sort -n -r | head -n 1 | grep -E '^[0-9]+$'
+    awk 'BEGIN { out=0 } /^$/ { out=0 } { if (out) { print $3 } } /^Number/ { out=1 }' | sed 's,B$,,g' | sort -n -r | head -n 1 | grep -E '^[0-9]+$'
 }
 
 make_backup_cmds_for_dd_entire_disk() {
