@@ -1,8 +1,8 @@
 #!/bin/sh
+# Version 2.3.3
+version="2.3.3"
 
-version="2.3.2"
-
-#  Copyright (c) 2014, 2017 Tristan Cavelier <t.cavelier@free.fr>
+#  Copyright (c) 2014, 2017, 2020 Tristan Cavelier <t.cavelier@free.fr>
 #
 #  This program is free software. It comes without any warranty, to
 #  the extent permitted by applicable law. You can redistribute it
@@ -227,7 +227,7 @@ make_restore_cmds_from_file() {
     if print "$basename" | grep -E '^[^.]+\.start\.bin$' >/dev/null ; then
         qdisk=$(quote "$(decode_name_component "$(print "$basename" | cut -d . -f 1)")")
         [ "$ADD_SORT_INDEX" ] && print 'a '
-        echo "dd if=$qFILE of=$qdisk"
+        echo "dd if=$qFILE of=$qdisk && sleep 1s"
     # DISK.end.bin
     elif print "$basename" | grep -E '^[^.]+\.end\.bin$' >/dev/null ; then
         disk=$(decode_name_component "$(print "$basename" | cut -d . -f 1)")
@@ -235,15 +235,15 @@ make_restore_cmds_from_file() {
         filesize=$(stat -c %s "$basename") || { err "Cannot print file size with \`stat\`" ; return $process_error_errno ; }
         qdisk=$(quote "$disk")
         [ "$ADD_SORT_INDEX" ] && print 'b '
-        echo "dd if=$qFILE of=$qdisk seek=$(($disksize - $filesize)) ibs=1"
+        echo "dd if=$qFILE of=$qdisk oflag=seek_bytes seek=$(($disksize - $filesize)) && sleep 1s"
     # DEV.dd.bin[.gz]
     elif print "$basename" | grep -E '^[^.]+\.dd\.bin(\.gz)?$' >/dev/null ; then
         qdev=$(quote "$(decode_name_component "$(print "$basename" | cut -d . -f 1)")")
         [ "$ADD_SORT_INDEX" ] && print 'c '
         if print "$basename" | grep '\.gz$' >/dev/null ; then
-            echo "zcat $qFILE | dd of=$qdev"
+            echo "zcat $qFILE | dd of=$qdev && sleep 1s"
         else
-            echo "dd if=$qFILE of=$qdev"
+            echo "dd if=$qFILE of=$qdev && sleep 1s"
         fi
     # PART.partclone.bin[.gz]
     elif print "$basename" | grep -E '^[^.]+\.partclone.bin(\.gz)?$' >/dev/null ; then
